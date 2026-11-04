@@ -37,6 +37,11 @@ opm_ui_bootstrap() {
 
 opm_ui_box() { whiptail --backtitle "$OPM_UI_BACKTITLE" "$@"; }
 
+# Keep the dialog itself on the terminal while routing the selected value back
+# through a command substitution. Whiptail draws on stdout by default; without
+# this descriptor swap, a captured menu can disappear into the shell's pipe.
+opm_ui_capture() { opm_ui_box "$@" 3>&1 1>&2 2>&3; }
+
 opm_ui_message() {
   local title="$1" message="$2"
   message=${message//\\n/$'\n'}
@@ -53,8 +58,8 @@ opm_ui_confirm() {
 opm_ui_input() {
   local title="$1" question="$2" initial="${3:-}"
   question=${question//\\n/$'\n'}
-  opm_ui_box --title "$title" --ok-button Continue --cancel-button Back \
-    --output-fd 1 --inputbox "$question" 13 "$OPM_UI_WIDTH" "$initial"
+  opm_ui_capture --title "$title" --ok-button Continue --cancel-button Back \
+    --output-fd 3 --inputbox "$question" 13 "$OPM_UI_WIDTH" "$initial"
 }
 
 opm_ui_welcome() {
@@ -98,8 +103,8 @@ opm_ui_system_check() {
 opm_ui_select_access() {
   local selected access_prompt
   access_prompt=$'Select how OPM will be accessed.\n\nLAN/VPN HTTP is recommended for simple private deployments.\nHTTP is unencrypted: never expose port 8765 publicly.'
-  selected=$(opm_ui_box --title ' Step 1 of 4 : Web access ' \
-    --ok-button Continue --cancel-button Back --output-fd 1 \
+  selected=$(opm_ui_capture --title ' Step 1 of 4 : Web access ' \
+    --ok-button Continue --cancel-button Back --output-fd 3 \
     --radiolist "$access_prompt" \
     19 "$OPM_UI_WIDTH" 3 \
     lan 'LAN / VPN HTTP (Default, no domain required)' ON \
@@ -174,16 +179,16 @@ opm_ui_get_administrator() {
     opm_ui_message ' Invalid username ' 'Use 3-64 characters, starting with a letter; letters, digits, . _ @ + - are allowed.'
     return 2
   fi
-  password=$(opm_ui_box --title ' Step 3 of 4 : Administrator password ' \
-    --ok-button Continue --cancel-button Back --output-fd 1 \
+  password=$(opm_ui_capture --title ' Step 3 of 4 : Administrator password ' \
+    --ok-button Continue --cancel-button Back --output-fd 3 \
     --passwordbox $'Create a strong administrator password (minimum 12 characters).\n\nThe password is never saved to installer logs.' \
     13 "$OPM_UI_WIDTH") || return 1
   if [[ ${#password} -lt 12 ]]; then
     opm_ui_message ' Password too short ' 'Choose a password with at least 12 characters.'
     return 2
   fi
-  confirm_password=$(opm_ui_box --title ' Step 3 of 4 : Confirm password ' \
-    --ok-button Continue --cancel-button Back --output-fd 1 \
+  confirm_password=$(opm_ui_capture --title ' Step 3 of 4 : Confirm password ' \
+    --ok-button Continue --cancel-button Back --output-fd 3 \
     --passwordbox 'Re-enter the administrator password:' 12 "$OPM_UI_WIDTH") || return 1
   if [[ "$password" != "$confirm_password" ]]; then
     opm_ui_message ' Password mismatch ' 'The two passwords did not match. Please try again.'

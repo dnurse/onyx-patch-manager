@@ -438,8 +438,8 @@ menu() {
   opm_ui_bootstrap || return 1
   local choice rc
   while :; do
-    choice=$(opm_ui_box --title ' OPM Installer & Maintenance ' \
-      --ok-button Select --cancel-button Exit --output-fd 1 \
+    choice=$(opm_ui_capture --title ' OPM Installer & Maintenance ' \
+      --ok-button Select --cancel-button Exit --output-fd 3 \
       --menu 'Select an action. New installs use the guided setup wizard.\nRepairs are diagnosed and reviewed before changes.' \
       19 "$OPM_UI_WIDTH" 7 \
       1 'Install / Upgrade OPM' \
