@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onyx-patch-manager"
+version = "0.5.6"
+description = "Agentless homelab inventory and patch manager with a modern private web dashboard and optional terminal UI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "textual>=1.0,<8",
+  "ansible-core>=2.17,<2.21",
+  "ansible-runner>=2.4,<3",
+  "paramiko>=3.4,<5",
+  "Django>=5.2,<6.1",
+  "argon2-cffi>=23.1,<27",
+  "gunicorn>=22,<24",
+  "whitenoise>=6.8,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+opm = "opm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"opm.web" = ["templates/web/*.html", "static/web/*.css", "static/web/*.js"]

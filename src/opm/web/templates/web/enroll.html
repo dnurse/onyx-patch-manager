@@ -1,0 +1,66 @@
+{% extends 'web/base.html' %}{% load static %}
+{% block breadcrumb %}Servers / Setup wizard{% endblock %}
+{% block title %}Add server{% endblock %}
+{% block body %}
+<div class="page-intro">
+  <div><p class="eyebrow">GUIDED SERVER ENROLLMENT</p><h1>{% if resume %}Complete server setup{% else %}Add a server{% endif %}</h1>
+  <p class="subtle">One setup. OPM handles key creation, account provisioning, and SSH verification for you.</p></div>
+  <a class="btn ghost" href="{% url 'servers' %}">Back to servers</a>
+</div>
+<section class="surface enroll-shell">
+  <ol class="enroll-progress" aria-label="Setup progress">
+    <li class="active" data-indicator="1"><span>1</span><div><strong>Administrator login</strong><small>Existing account</small></div></li>
+    <li data-indicator="2"><span>2</span><div><strong>OPM account</strong><small>New credentials</small></div></li>
+    <li data-indicator="3"><span>3</span><div><strong>Setup and test</strong><small>Automatic provisioning</small></div></li>
+  </ol>
+  <form method="post" id="enrollment-form" data-opm-loading="Setting up and testing your server" data-opm-loading-detail="Creating the OPM account, installing its SSH key and checking login and sudo." data-fingerprint-url="{% url 'enrollment_fingerprint' %}" autocomplete="off">
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="flash error" role="alert">{{ form.non_field_errors }}</div>{% endif %}
+    {% if form.errors %}<div class="flash error" role="alert">Check the setup information and retry. Passwords are never saved after an unsuccessful request.</div>{% endif %}
+    <section class="enroll-step" data-step="1" aria-label="Administrator login">
+      <div class="enroll-step-heading"><span class="step-number">01</span><div><h2>Connect with your existing login</h2><p class="subtle">OPM uses these credentials once to set up its dedicated account. Your personal account is not used for future patching.</p></div></div>
+      <div class="form-grid">
+        <div><label for="id_name">Server name</label>{{ form.name }}{{ form.name.errors }}</div>
+        <div><label for="id_address">IP address or hostname</label>{{ form.address }}{{ form.address.errors }}</div>
+        <div><label for="id_ssh_port">SSH port</label>{{ form.ssh_port }}{{ form.ssh_port.errors }}</div>
+        <div><label for="id_group_name">Group</label>{{ form.group_name }}</div>
+        <div class="full"><label for="id_admin_user">Existing administrator username</label>{{ form.admin_user }}<p class="field-hint">The account you normally use when connecting to this server.</p></div>
+        <div class="full"><label for="id_login_password">Existing administrator SSH password</label>{{ form.login_password }}</div>
+        <div class="full"><label for="id_admin_sudo_password">Administrator sudo password <span class="subtle">(optional)</span></label>{{ form.admin_sudo_password }}<p class="field-hint">Leave blank if it is the same as the SSH password. If your administrator uses passwordless sudo, this field can also be left blank.</p></div>
+      </div>
+      <div class="enroll-actions"><button type="button" id="to-step-2" class="btn primary">Next: OPM account</button></div>
+    </section>
+    <section class="enroll-step" data-step="2" hidden aria-label="Dedicated OPM account">
+      <div class="enroll-step-heading"><span class="step-number">02</span><div><h2>Create the OPM credentials</h2><p class="subtle">OPM will create a dedicated <code>opm</code> Linux user on this server and install a controller-managed ED25519 SSH key automatically.</p></div></div>
+      <div class="form-grid">
+        <div class="full"><label for="id_opm_password">New OPM sudo password</label>{{ form.opm_password }}<p class="field-hint">At least 12 characters. You will enter this password when authorizing future privileged patch runs.</p></div>
+        <div class="full"><label for="id_opm_password_confirm">Confirm OPM sudo password</label>{{ form.opm_password_confirm }}</div>
+        <div class="full enroll-checkbox"><label for="id_protected">{{ form.protected }} Protected server, require additional patch approval</label></div>
+      </div>
+      <div class="enroll-note">OPM never stores these passwords in its inventory database or browser session. They are submitted only when you confirm setup.</div>
+      <div class="enroll-actions"><button type="button" class="btn ghost" data-back="1">Back</button><button type="button" id="to-step-3" class="btn primary">Next: Setup and test</button></div>
+    </section>
+    <section class="enroll-step" data-step="3" hidden aria-label="Setup and test">
+      <div class="enroll-step-heading"><span class="step-number">03</span><div><h2>Verify identity, set up and test</h2><p class="subtle">OPM will discover the SSH fingerprint, create its key and account, then verify SSH login and sudo.</p></div></div>
+      <div id="fingerprint-progress" class="enroll-note" role="status">Checking the server's SSH identity...</div>
+      <div id="fingerprint-panel" class="fingerprint-panel" hidden>
+        <span class="eyebrow">REMOTE SSH HOST KEY</span>
+        <div class="fingerprint-label">ED25519 fingerprint</div>
+        <code id="fingerprint-value" class="fingerprint-value"></code>
+        <p class="field-hint">This fingerprint comes from the network and is not independently authenticated. Comparing it with a trusted record provides stronger protection. If you choose to trust it on first use, you accept the risk of connecting to the wrong server.</p>
+        <label class="enroll-approval"><input id="trust-check" type="checkbox" required> I approve trusting this server's displayed fingerprint.</label>
+      </div>
+      <div id="fingerprint-error" class="flash error" role="alert" hidden></div>
+      <input type="hidden" id="id_fingerprint" name="fingerprint" value="">
+      <input type="hidden" id="id_trust_ack" name="trust_ack" value="">
+      <div class="enroll-summary"><strong>After you confirm, OPM will:</strong>
+        <ol><li>Trust the approved SSH host key.</li><li>Generate or reuse the controller's SSH identity.</li><li>Use your temporary administrator credentials to create the <code>opm</code> user.</li><li>Install the OPM public key and configure password-required sudo.</li><li>Test SSH key login and the new sudo password.</li><li>Automatically scan APT packages and Docker/Podman using the verified OPM sudo authorization. This can refresh APT package indexes but will not install upgrades or restart containers.</li></ol>
+      </div>
+      <div class="enroll-actions"><button type="button" class="btn ghost" data-back="2">Back</button><button type="button" id="retry-fingerprint" class="btn secondary">Check fingerprint again</button><button type="submit" id="finish-enroll" class="btn primary" disabled>Set up and test server</button></div>
+      <p id="setup-running" class="subtle" role="status" hidden>Provisioning and verification are running in the background. You may leave this page and monitor Activity.</p>
+    </section>
+  </form>
+  <noscript><p class="flash error">This guided setup requires a small local script for step navigation and fingerprint discovery. Enable JavaScript for this internal OPM site.</p></noscript>
+</section>
+<script src="{% static 'web/enroll.js' %}" defer></script>
+{% endblock %}

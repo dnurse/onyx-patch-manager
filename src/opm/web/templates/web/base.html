@@ -1,0 +1,51 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark"><title>{% block title %}Onyx Patch Manager{% endblock %} | OPM</title>
+{% if refresh %}<meta http-equiv="refresh" content="8">{% endif %}
+<link rel="stylesheet" href="{% static 'web/styles.css' %}">
+<script defer src="{% static 'web/actions.js' %}"></script>
+<script defer src="{% static 'web/activity.js' %}"></script>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a href="{% url 'dashboard' %}" class="brand"><span class="brand-symbol">O</span><span><strong>ONYX</strong><small>PATCH MANAGER</small></span></a>
+    <div class="sidebar-section">WORKSPACE</div>
+    <nav class="nav-links">
+      <a class="nav-link {% if page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span class="nav-icon">▦</span> Dashboard</a>
+      <a class="nav-link {% if page == 'patch' %}active{% endif %}" href="{% url 'patch_manager' %}"><span class="nav-icon">▣</span> Patch Manager</a>
+      <a class="nav-link {% if page == 'servers' %}active{% endif %}" href="{% url 'servers' %}"><span class="nav-icon">▤</span> Servers</a>
+      <a class="nav-link {% if page == 'history' %}active{% endif %}" href="{% url 'history' %}"><span class="nav-icon">◷</span> History</a>
+      <a class="nav-link {% if page == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><span class="nav-icon">S</span> Settings</a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="controller-mini"><span class="dot {% if controller.status == "ready" %}good{% endif %}"></span><span>LOCAL CONTROLLER</span></div>
+      <div class="sidebar-user"><span class="avatar">{{ request.user.username|slice:':1'|upper }}</span><span class="user-detail"><strong>{{ request.user.username }}</strong><small>{% if request.user.is_superuser %}Administrator{% elif request.user.is_staff %}Operator{% else %}Viewer{% endif %}</small></span></div>
+      <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="logout-link" type="submit">Sign out</button></form>
+    </div>
+  </aside>
+  <div class="main-wrap">
+    <header class="topbar"><div class="topbar-title">OPM <span>/</span> {% block breadcrumb %}Overview{% endblock %}</div><div class="topbar-right"><div class="activity-control">
+      <button type="button" id="opm-activity-toggle" class="activity-toggle" aria-expanded="false" aria-controls="opm-activity-panel">
+        <span class="activity-pulse" aria-hidden="true"></span>
+        <span id="opm-activity-count">Activity</span>
+      </button>
+      <section id="opm-activity-panel" class="activity-dropdown" hidden aria-label="Background activity">
+        <div class="activity-dropdown-head"><strong>Background activity</strong><span id="opm-activity-freshness">Updating...</span></div>
+        <div id="opm-activity-items" class="activity-dropdown-list"><p class="muted small">Checking the controller...</p></div>
+        <a class="activity-dropdown-footer" href="{% url 'history' %}">Patch history</a>
+      </section>
+    </div><span class="top-dot"></span> Internal management <span class="top-version">v0.5.5</span><form method="post" action="{% url 'logout' %}" class="mobile-logout">{% csrf_token %}<button type="submit" aria-label="Sign out">Sign out</button></form></div></header>
+    <main class="main-content" id="content">
+      {% if messages %}<div class="flash-group" aria-live="polite">{% for message in messages %}<div class="flash {{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+      {% block body %}{% endblock %}
+    </main>
+  </div>
+</div>
+<!-- Non-blocking notifications are shown only for operations observed in
+     this browser tab. The controller remains authoritative for progress. -->
+<div id="opm-activity-toast" class="activity-toast" hidden role="status" aria-live="polite"></div>
+</body></html>
