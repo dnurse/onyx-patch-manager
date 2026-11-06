@@ -26,7 +26,7 @@ OPM does not schedule unattended operating-system patching or automatically rebo
 4. Follow the setup wizard to configure web access and create the initial administrator account.
 5. Sign in, add a Debian or Ubuntu server, review its SSH host fingerprint, and enroll it. Scan servers before reviewing a patch plan.
 
-For upgrades and maintenance, see [UPGRADE.md](UPGRADE.md). For deployment and access guidance, see [SECURITY.md](SECURITY.md).
+For upgrades and maintenance, see [UPGRADE.md](https://github.com/dnurse/onyx-patch-manager/blob/nightly/UPGRADE.md). For deployment and access guidance, see [SECURITY.md](https://github.com/dnurse/onyx-patch-manager/blob/nightly/SECURITY.md).
 
 ## Network access
 
@@ -36,4 +36,4 @@ Keep OPM on a trusted LAN or VPN, or place it behind a restricted internal HTTPS
 
 Automated operating-system update discovery and patch execution target APT-based Debian and Ubuntu systems. Docker and Podman discovery is informational only; OPM does not pull images or apply Docker/Podman Compose changes.
 
-For release-specific changes, see [GitHub Releases](https://github.com/dnurse/onyx-patch-manager/releases) and `RELEASE_NOTES.md`.
+For release-specific changes, see [GitHub Releases](https://github.com/dnurse/onyx-patch-manager/releases) and [release notes](https://github.com/dnurse/onyx-patch-manager/blob/nightly/RELEASE_NOTES.md).
