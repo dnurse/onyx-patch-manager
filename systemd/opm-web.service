@@ -1,0 +1,17 @@
+[Unit]
+Description=Onyx Patch Manager private web interface
+After=opm-controller.service
+Requires=opm-controller.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/opm/web.env
+WorkingDirectory=%h/onyx_patch_manager
+ExecStart=%h/opm-venv/bin/gunicorn --workers 2 --worker-class sync --bind ${OPM_WEB_BIND} --timeout 170 --access-logfile - --error-logfile - opm.web.wsgi:application
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

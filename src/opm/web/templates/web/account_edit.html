@@ -1,0 +1,23 @@
+{% extends 'web/base.html' %}{% block breadcrumb %}Settings / Edit account{% endblock %}{% block title %}Edit {{ account.username }}{% endblock %}
+{% block body %}
+<div class="page-intro"><div><p class="eyebrow">ACCOUNT MANAGEMENT</p><h1>Edit {{ account.username }}</h1><p class="subtle">Change this account's role or reset its password. Leave the password fields blank to keep the existing password.</p></div></div>
+<section class="surface account-edit-surface">
+  <div class="surface-heading"><div><h2>Account settings</h2><p>Current role: {{ role_name|title }}{% if not account.is_active %} · Disabled account{% endif %}</p></div></div>
+  <form method="post" class="form-stack">
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="form-error">{{ form.non_field_errors }}</div>{% endif %}
+    <label for="{{ form.role.id_for_label }}">Role</label>
+    {{ form.role }}
+    {% if form.role.errors %}<div class="form-error">{{ form.role.errors }}</div>{% endif %}
+    <p class="muted small">Administrators manage servers and settings; Operators scan and patch; Viewers can only monitor.</p>
+    <label for="{{ form.new_password.id_for_label }}">New password (optional)</label>
+    {{ form.new_password }}
+    {% if form.new_password.errors %}<div class="form-error">{{ form.new_password.errors }}</div>{% endif %}
+    <label for="{{ form.confirm_password.id_for_label }}">Confirm new password</label>
+    {{ form.confirm_password }}
+    {% if form.confirm_password.errors %}<div class="form-error">{{ form.confirm_password.errors }}</div>{% endif %}
+    <p class="muted small">Password resets invalidate the user's existing login sessions. Role changes apply on their next request.</p>
+    <div class="form-actions"><a class="btn ghost" href="{% url 'settings' %}">Cancel</a><button class="btn primary" type="submit">Save account changes</button></div>
+  </form>
+</section>
+{% endblock %}
