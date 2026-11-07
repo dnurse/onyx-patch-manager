@@ -63,7 +63,7 @@ This source archive excludes live controller files, credentials, logs, caches, a
 
 ## Screenshots
 
-These representative interface screenshots are anonymized: server and account names, job identifiers, runtime container identity, exact timestamps, and captured version badges have been removed.
+These representative interface screenshots are privacy-filtered: infrastructure IP addresses, account usernames, exact timestamps, and captured version badges are removed. Dashboard server labels are intentionally retained; names are not treated as credentials.
 
 | Dashboard | Patch Manager |
 |---|---|
