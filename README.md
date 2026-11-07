@@ -37,3 +37,15 @@ Keep OPM on a trusted LAN or VPN, or place it behind a restricted internal HTTPS
 Automated operating-system update discovery and patch execution target APT-based Debian and Ubuntu systems. Docker and Podman discovery is informational only; OPM does not pull images or apply Docker/Podman Compose changes.
 
 For release-specific changes, see [GitHub Releases](https://github.com/dnurse/onyx-patch-manager/releases) and [release notes](https://github.com/dnurse/onyx-patch-manager/blob/nightly/RELEASE_NOTES.md).
+
+## Screenshots
+
+These representative interface screenshots have been anonymized: server names, account names, job identifiers, runtime container identity, exact timestamps, and the captured application-version badge have been removed.
+
+| Dashboard | Patch Manager |
+|---|---|
+| ![OPM dashboard overview](docs/screenshots/dashboard.png) | ![OPM patch manager server and update view](docs/screenshots/patch-manager.png) |
+
+| Patch review | Job history |
+|---|---|
+| ![OPM patch plan review](docs/screenshots/patch-review.png) | ![OPM patch job history](docs/screenshots/patch-history.png) |
