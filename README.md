@@ -49,3 +49,7 @@ These representative interface screenshots have been anonymized: server names, a
 | Patch review | Job history |
 |---|---|
 | ![OPM patch plan review](docs/screenshots/patch-review.png) | ![OPM patch job history](docs/screenshots/patch-history.png) |
+
+### Installer welcome
+
+![OPM installer welcome screen](docs/screenshots/installer-welcome.png)
