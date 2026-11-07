@@ -40,7 +40,7 @@ For release-specific changes, see [GitHub Releases](https://github.com/dnurse/on
 
 ## Screenshots
 
-These representative interface screenshots have been anonymized: server names, account names, job identifiers, runtime container identity, exact timestamps, and the captured application-version badge have been removed.
+These representative interface screenshots are privacy-filtered: infrastructure IP addresses, account usernames, exact timestamps, and captured version badges are removed. Dashboard server labels are intentionally retained; names are not treated as credentials.
 
 | Dashboard | Patch Manager |
 |---|---|
