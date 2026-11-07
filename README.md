@@ -1,46 +1,69 @@
-# Onyx Patch Manager
+# Onyx Patch Manager (OPM) v0.6.0
 
-Onyx Patch Manager (OPM) is a self-hosted tool for reviewing and managing Linux server maintenance from one web interface. It connects to managed servers over SSH and uses Ansible for supported patch operations.
+**OPM v0.6.0 is a full GitHub release and a pre-Gold-Master development milestone.**
 
-## What it does
+A private, agentless Linux patch-management application for a Debian 13 controller, with a web dashboard, explicit approval for APT patching, and SSH-key-managed remote hosts.
 
-- Keeps an inventory of enrolled servers and their scan status.
-- Finds available APT updates on Debian and Ubuntu servers.
-- Lets an operator review a patch plan, run a dry run, or explicitly approve applying updates.
-- Tracks background jobs and their results in activity and history views.
-- Displays Docker and Podman inventory for visibility; container image and Compose updates are not applied.
-- Supports Administrator, Operator, and Viewer roles.
+## Capabilities
 
-OPM does not schedule unattended operating-system patching or automatically reboot managed servers.
+- Discover servers and inspect available APT updates on supported Debian/Ubuntu hosts.
+- Execute explicitly approved OS patches or run non-mutating Ansible/Apt Dry Run validation. Automatic reboots are disabled.
+- Detect Docker and Podman workloads (including multi-user rootless contexts) for **review only**; Compose update execution is not yet implemented.
+- Guided remote SSH onboarding, existing-`opm` account adoption/replacement, and administrator-approved recovery of lost SSH keys.
+- Protect sensitive hosts with a separate patch approval; inspect persisted jobs, activity history, scan results and SSH diagnostics.
+- Administrator, Operator and Viewer access controls; Viewer IP redaction and no Settings access.
+- Modern responsive web UI with grouping/sorting, controller heartbeat and cached ICMP reachability. Dashboard defaults to numeric IP order; group sorting preserves configured headings.
+- Native Whiptail install/upgrade/repair/uninstall utility (not the retired Textual management UI).
 
-## Getting started
+## Install on Debian 13
 
-1. Prepare a dedicated Debian 13 VM or LXC for the OPM controller.
-2. Download and extract a source archive from [GitHub Releases](https://github.com/dnurse/onyx-patch-manager/releases).
-3. From the extracted project directory, launch the installer:
+Extract the GitHub source ZIP and from the directory containing `OPMInstall.sh` run:
 
-   ```bash
-   sudo bash OPMInstall.sh
-   ```
+```bash
+sudo bash OPMInstall.sh
+```
 
-4. Follow the setup wizard to configure web access and create the initial administrator account.
-5. Sign in, add a Debian or Ubuntu server, review its SSH host fingerprint, and enroll it. Scan servers before reviewing a patch plan.
+New installations open a guided Whiptail wizard. Existing installations open the maintenance menu. For an explicit upgrade from an extracted newer source:
 
-For upgrades and maintenance, see [UPGRADE.md](UPGRADE.md). For deployment and access guidance, see [SECURITY.md](SECURITY.md).
+```bash
+sudo bash OPMInstall.sh --install
+```
 
-## Network access
+Do not select Complete Uninstall to perform an upgrade. It intentionally removes the local OPM account and controller state. The normal upgrade path is designed to preserve server inventory, SQLite history, accounts, SSH identities and web settings.
 
-Keep OPM on a trusted LAN or VPN, or place it behind a restricted internal HTTPS reverse proxy. Direct LAN/VPN HTTP does not encrypt credentials in transit. Do not expose the OPM web port directly to the public internet.
+After installation, access OPM through its configured private LAN/VPN address or internal HTTPS reverse proxy. Do **not** expose the plain HTTP listener directly to the Internet.
 
-## Supported patching
+## Release notes and documentation
 
-Automated operating-system update discovery and patch execution target APT-based Debian and Ubuntu systems. Docker and Podman discovery is informational only; OPM does not pull images or apply Docker/Podman Compose changes.
+- [v0.6.0 GitHub release](https://github.com/dnurse/onyx-patch-manager/releases/tag/v0.6.0) — canonical release summary and validation status
+- [Versioning policy](VERSIONING.md) — GitHub minor bumps, internal patch bumps, GM major bump
+- [All release notes](RELEASE_NOTES.md)
+- [Security and deployment](SECURITY.md)
+- [Upgrade guide](UPGRADE.md)
+- [Architecture and scope](SPECIFICATION.md)
 
-For release-specific changes, see [GitHub Releases](https://github.com/dnurse/onyx-patch-manager/releases) and `RELEASE_NOTES.md`.
+## Development and tests
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e '.[dev]'
+pytest -q
+```
+
+Tests include simulated SSH/account operations and source-level release regressions. Some Django integration tests require a full configured Django environment and may be skipped in a minimal development container. A passing test suite does not prove live controller upgrades, remote account recovery, proxy security or Compose operation.
+
+## Road to GM
+
+Field-tested so far: fresh Debian 13 installation, successful multi-host OS patching, Dry Run, user role checks, complete local uninstall, and remote account deletion/recreation. Remaining validation includes SSH repair, interrupted jobs, security edge cases, multi-user Podman, upgrade/repair, and mobile UI. Docker/Podman Compose updating remains a development item. These gaps must be resolved or explicitly deferred before GM sign-off.
+
+## Publishing
+
+This source archive excludes live controller files, credentials, logs, caches, and databases. Publish its **contents** at the repository root and attach the source ZIP to the GitHub release. The GitHub release description is the canonical version-specific change summary; no separate release-description Markdown file is needed. The version scheme is maintained in `VERSIONING.md`.
 
 ## Screenshots
 
-These representative interface screenshots have been anonymized: server names, account names, job identifiers, runtime container identity, exact timestamps, and the captured application-version badge have been removed.
+These representative interface screenshots are anonymized: server and account names, job identifiers, runtime container identity, exact timestamps, and captured version badges have been removed.
 
 | Dashboard | Patch Manager |
 |---|---|

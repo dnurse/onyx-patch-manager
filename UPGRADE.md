@@ -1,3 +1,29 @@
+# OPM v0.6.0 installation and upgrade
+
+**Debian 13 controller only.** Extract the source ZIP and run from the directory containing `OPMInstall.sh`:
+
+```bash
+sudo bash OPMInstall.sh
+```
+
+A fresh system opens the Whiptail welcome/setup wizard. An existing installation opens the maintenance menu. For a direct authorized upgrade from a selected release:
+
+```bash
+sudo bash OPMInstall.sh --install
+```
+
+The installer determines the current and selected application version, refuses accidental downgrades, and preserves registered servers, Django accounts, SQLite history, managed SSH keys and web-access settings during normal upgrades. It does not replace remote service accounts.
+
+**Important:** Complete Uninstall intentionally removes the local controller account, database and keys. It is not an upgrade mechanism.
+
+After an upgrade, hard-refresh your browser, check `sudo opm-installer --status`, and verify a routine Dashboard, Settings and Patch Manager view. If a server loses key access, use Test SSH to establish whether authentication failed; Repair SSH is displayed only when that failure is confirmed.
+
+For the release cadence, see [`VERSIONING.md`](VERSIONING.md).
+
+---
+
+## Historical instructions (earlier releases)
+
 # Current OPM v0.5.10 install and upgrade
 
 On a **new** Debian 13 controller LXC/VM, extract the release ZIP and run `sudo bash OPMInstall.sh` to begin the Whiptail setup wizard. The default web access mode is LAN/VPN HTTP; existing mode selections are retained when edited later.

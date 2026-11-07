@@ -4,7 +4,7 @@
 # lives here: it only gathers validated answers and renders native newt dialogs.
 # NEWT_COLORS uses 16 terminal colour names; navy/slate/teal are approximations.
 
-OPM_UI_VERSION="0.5.13"
+OPM_UI_VERSION="0.6.0"
 OPM_UI_BACKTITLE=" ONYX PATCH MANAGER  |  ${OPM_UI_VERSION}  |  INSTALLATION & MAINTENANCE "
 OPM_UI_WIDTH=76
 OPM_UI_TERM_ROWS=24
@@ -395,49 +395,103 @@ opm_ui_first_install() {
   done
 }
 
-OPM_UI_DONE_STAGES=()
-OPM_UI_LAST_STAGE=''
+# The caller owns OPM_UI_STAGES, the manifest of every installation stage.
+# NOTE: Whiptail/newt FIXES the gauge textbox height from its INITIAL text.
+# If the initial --gauge argument has only two lines, later XXX updates with
+# fifteen lines stay clipped. Build the complete checklist BEFORE spawning it.
+opm_ui_gauge_stage_line() {
+  local index="$1" completed="$2" current="$3" name="$4"
+  if (( index < completed )); then
+    printf '✓  %s' "$name"
+  elif (( index == completed )) && [[ "$name" == "$current" ]]; then
+    # Native newt gauges cannot reliably apply per-line foreground colours or
+    # bold. The white gauge text plus arrow and uppercase stage name distinguish
+    # the active step; checked lines and empty squares preserve completed and
+    # upcoming stages. The green progress bar remains the completion cue.
+    printf '▶  %s' "${name^^}"
+  else
+    printf '□  %s' "$name"
+  fi
+}
+
+opm_ui_gauge_text() {
+  local complete="${1:-0}" message="${2:-}" text line index left right
+  [[ "$complete" =~ ^[0-9]+$ ]] || complete=0
+  text="${OPM_UI_ACTION_LABEL:-INSTALLING ONYX PATCH MANAGER}"
+  if declare -p OPM_UI_STAGES >/dev/null 2>&1 && (( ${#OPM_UI_STAGES[@]} > 0 )); then
+    local count=${#OPM_UI_STAGES[@]} col_width split
+    (( complete > count )) && complete=$count
+    # Initial window drawing must include an active step even before the
+    # installer calls start_step for the first time.
+    if [[ -z "$message" ]] && (( complete < count )); then
+      message="${OPM_UI_STAGES[complete]}"
+    fi
+    if (( OPM_UI_TERM_ROWS < 24 )); then
+      col_width=$(( (OPM_UI_WIDTH - 12) / 2 ))
+      (( col_width < 10 )) && col_width=10
+      split=$(( (count + 1) / 2 ))
+      for (( index=0; index<split; index++ )); do
+        left=$(opm_ui_gauge_stage_line "$index" "$complete" "$message" "${OPM_UI_STAGES[index]}")
+        if (( index + split < count )); then
+          right=$(opm_ui_gauge_stage_line "$((index+split))" "$complete" "$message" "${OPM_UI_STAGES[index+split]}")
+          printf -v line '%-*.*s  %-*.*s' "$col_width" "$col_width" "$left" "$col_width" "$col_width" "$right"
+        else
+          printf -v line '%.*s' "$col_width" "$left"
+        fi
+        text+=$'\n'"$line"
+      done
+    else
+      for (( index=0; index<count; index++ )); do
+        line=$(opm_ui_gauge_stage_line "$index" "$complete" "$message" "${OPM_UI_STAGES[index]}")
+        text+=$'\n'"$line"
+      done
+    fi
+  else
+    # Standalone callers without a stage manifest still get the original
+    # percentage-based progress display.
+    if (( complete >= ${TOTAL_STEPS:-15} )); then
+      text+=$'\n✓  Operation complete'
+    else
+      text+=$'\n▶  '"${message:-Preparing operation...}"
+    fi
+  fi
+  printf '%s' "$text"
+}
+
 opm_ui_gauge_start() {
   [[ "$OPM_UI_ACTIVE" == 1 ]] || return 0
-  OPM_UI_DONE_STAGES=()
-  OPM_UI_LAST_STAGE=''
+  OPM_UI_GAUGE_HEIGHT=$((OPM_UI_TERM_ROWS - 2))
+  (( OPM_UI_GAUGE_HEIGHT > 23 )) && OPM_UI_GAUGE_HEIGHT=23
+  (( OPM_UI_GAUGE_HEIGHT < 14 )) && OPM_UI_GAUGE_HEIGHT=14
   OPM_UI_GAUGE_DIR=$(mktemp -d /tmp/opm-gauge.XXXXXXXX) || return 1
   chmod 0700 "$OPM_UI_GAUGE_DIR"
   mkfifo -m 0600 "$OPM_UI_GAUGE_DIR/events"
-  local title="${OPM_UI_ACTION_LABEL:-INSTALLING ONYX PATCH MANAGER}"
-  whiptail --fb --backtitle "$OPM_UI_BACKTITLE" \
+  local initial_text
+  initial_text=$(opm_ui_gauge_text "${COMPLETED:-0}" "${CURRENT_STEP:-}")
+  # Force UTF-8 for native checkmarks, arrows and empty squares even if an SSH
+  # login defaults to LANG=C. Debian 13 provides the C.UTF-8 locale.
+  local initial_percent=0
+  if [[ "${COMPLETED:-0}" =~ ^[0-9]+$ && "${TOTAL_STEPS:-0}" =~ ^[0-9]+$ ]] &&
+     (( ${TOTAL_STEPS:-0} > 0 )); then
+    initial_percent=$((COMPLETED * 100 / TOTAL_STEPS))
+  fi
+  LC_ALL=C.UTF-8 whiptail --fb --backtitle "$OPM_UI_BACKTITLE" \
     --title ' OPM Installer | Progress ' \
-    --gauge "${title}"$'\n\n[ ] Preparing operation...' \
-    16 "$OPM_UI_WIDTH" 0 < "$OPM_UI_GAUGE_DIR/events" &
+    --gauge "$initial_text" \
+    "$OPM_UI_GAUGE_HEIGHT" "$OPM_UI_WIDTH" "$initial_percent" < "$OPM_UI_GAUGE_DIR/events" &
   OPM_UI_GAUGE_PID=$!
   exec {OPM_UI_GAUGE_FD}>"$OPM_UI_GAUGE_DIR/events"
+  if [[ -n "${CURRENT_STEP:-}" && "${COMPLETED:-0}" =~ ^[0-9]+$ ]]; then
+    opm_ui_gauge_update "$((COMPLETED * 100 / ${TOTAL_STEPS:-15}))" "$CURRENT_STEP" "$COMPLETED"
+  fi
 }
 
 opm_ui_gauge_update() {
   [[ -n "$OPM_UI_GAUGE_FD" ]] || return 0
-  local percent="$1" message="$2" complete="${3:-0}" stage text item
-  # Show a real rolling checklist: only completed stages receive [x].
-  # This is a UI record; installation operations still run in OPMInstall.sh.
-  if [[ "$complete" =~ ^[0-9]+$ ]]; then
-    while (( ${#OPM_UI_DONE_STAGES[@]} < complete )); do
-      OPM_UI_DONE_STAGES+=("${OPM_UI_LAST_STAGE:-$message}")
-    done
-  fi
-  OPM_UI_LAST_STAGE="$message"
-  text="${OPM_UI_ACTION_LABEL:-INSTALLING ONYX PATCH MANAGER}"$'\n'
-  local first=0
-  if (( ${#OPM_UI_DONE_STAGES[@]} > 4 )); then
-    first=$((${#OPM_UI_DONE_STAGES[@]} - 4))
-  fi
-  for item in "${OPM_UI_DONE_STAGES[@]:first}"; do
-    text+=$'\n[x] '"$item"
-  done
-  if (( percent < 100 )); then
-    text+=$'\n[ ] '"$message"
-  else
-    text+=$'\n[x] Operation complete'
-  fi
-  # Whiptail --gauge reads the XXX block syntax from stdin.
+  local percent="$1" message="$2" complete="${3:-0}" text
+  text=$(opm_ui_gauge_text "$complete" "$message")
+  # The XXX frame replaces the text content without changing its height. The
+  # initial text always has exactly as many rows as subsequent progress text.
   printf 'XXX\n%s\n%s\nXXX\n' "$percent" "$text" >&"$OPM_UI_GAUGE_FD" || true
 }
 

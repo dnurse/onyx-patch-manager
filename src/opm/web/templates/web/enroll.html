@@ -28,7 +28,13 @@
         <div class="full"><label for="id_login_password">Existing administrator SSH password</label>{{ form.login_password }}</div>
         <div class="full"><label for="id_admin_sudo_password">Administrator sudo password <span class="subtle">(optional)</span></label>{{ form.admin_sudo_password }}<p class="field-hint">Leave blank if it is the same as the SSH password. If your administrator uses passwordless sudo, this field can also be left blank.</p></div>
       </div>
-      <div class="enroll-actions"><button type="button" id="to-step-2" class="btn primary">Next: OPM account</button></div>
+      <div class="enroll-actions enroll-first-actions">
+        <label class="enroll-protected-option" for="id_protected">
+          <span class="enroll-protected-title">{{ form.protected }}<strong>Protect server</strong></span>
+          <small>Require separate approval before patching this server.</small>
+        </label>
+        <button type="button" id="to-step-2" class="btn primary">Next: OPM account</button>
+      </div>
     </section>
     <section class="enroll-step" data-step="2" hidden aria-label="Dedicated OPM account">
       <div class="enroll-step-heading"><span class="step-number">02</span><div><h2>Check the OPM account</h2><p class="subtle">Verify the server fingerprint, then OPM checks for an existing <code>opm</code> Linux account using your temporary administrator login.</p></div></div>

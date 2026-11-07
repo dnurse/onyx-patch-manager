@@ -1,5 +1,5 @@
 {% extends 'web/base.html' %}{% load opm_display static %}{% block breadcrumb %}Dashboard{% endblock %}{% block title %}Dashboard{% endblock %}
-{% block extra_head %}<script defer src="{% static 'web/dashboard.js' %}"></script>{% endblock %}
+{% block extra_head %}<script defer src="{% static 'web/dashboard.js' %}"></script><script defer src="{% static 'web/server_sort.js' %}"></script>{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">INFRASTRUCTURE OVERVIEW</p><h1>Dashboard</h1><p class="subtle">A centralized view of your servers, updates and recent activity.</p></div><div class="intro-actions"><a class="btn ghost" href="{% url 'servers' %}">Manage servers</a>{% if request.user.is_staff %}<a class="btn primary" href="{% url 'scan_authorization' %}">Scan all servers</a>{% endif %}</div></div>
 <div class="metric-grid">
@@ -9,14 +9,47 @@
 <div class="metric"><p>Failed scans</p><strong class="{% if scan_failed %}warn-text{% endif %}">{{ scan_failed }}</strong><span>Check connectivity</span></div>
 <div class="metric"><p>Active operations</p><strong>{{ active_jobs }}</strong><span>Queued or running operations</span></div>
 </div>
-<div class="dashboard-layout"><section class="surface"><div class="surface-heading"><div><h2>Server overview</h2><p>ICMP ping every 2 minutes while this page is visible. Up means the host replied; Down means no reply. Package and system data is from the last full scan.</p></div><a class="text-link text-link-servers" href="{% url 'servers' %}"><span class="desktop-inline">View all servers</span><span class="mobile-two-line">View all<br>servers</span></a></div>
-<div class="table-scroll" data-connection-monitor data-endpoint="{% url 'dashboard_connectivity' %}"><table class="data-table"><thead><tr><th>Server</th><th>Connection</th><th>Last scan</th><th>Updates</th><th>RAM</th><th>Disk</th><th>Uptime</th></tr></thead><tbody>{% for h in hosts %}<tr><td data-label="Server"><a class="server-link" href="{% url 'server_detail' h.id %}"><span class="machine-icon">▤</span><span><strong>{{ h.name }}</strong><small>{{ h.address }}</small></span></a></td><td data-label="Connection" class="connection-cell"><div class="connection-pill-wrap"><span class="status neutral" data-host-connection="{{ h.id }}" title="Waiting for ICMP ping">Checking...</span><small class="ping-diagnostic" data-host-ping-diagnostic="{{ h.id }}" hidden></small></div></td><td data-label="Last scan"><div class="scan-cell">{% if h.scan.state == 'completed' %}{% if h.os.metadata != 'fresh' and h.os.family == 'debian' or h.os.metadata != 'fresh' and h.os.family == 'ubuntu' %}<span class="status warn">Partial</span>{% else %}<span class="status ok">Completed</span>{% endif %}{% elif h.scan.state == 'failed' %}<span class="status danger">Failed</span>{% elif h.scan.state == 'running' %}<span class="status neutral loading">Scanning</span>{% else %}<span class="status neutral">Not scanned</span>{% endif %}<small>{{ h.scan.finished|scan_time }}</small></div></td><td data-label="Updates">{% if h.scan.state == 'completed' %}{% if h.os.metadata == 'fresh' %}<strong class="num">{{ h.updates }}</strong>{% else %}<span class="muted">Unverified</span>{% endif %}{% else %}<span class="muted">Unknown</span>{% endif %}</td><td data-label="RAM">{% if h.system.memory_percent != 'unknown' and h.system.memory_percent != None %}{{ h.system.memory_percent }}%{% else %}N/A{% endif %}</td><td data-label="Disk">{% if h.system.disk_percent != 'unknown' and h.system.disk_percent != None %}{{ h.system.disk_percent }}%{% else %}N/A{% endif %}</td><td data-label="Uptime">{{ h.system.uptime|default:'N/A' }}</td></tr>{% empty %}<tr><td colspan="7" class="empty-state">No servers registered yet. {% if request.user.is_superuser %}<a href="{% url 'server_add' %}">Add your first server</a>{% else %}Add your first server{% endif %}.</td></tr>{% endfor %}</tbody></table></div></section>
+<div class="dashboard-layout"><section class="surface server-table-surface">
+  <div class="surface-heading">
+    <div><h2>Server overview</h2><p>ICMP ping every 2 minutes while this page is visible. Up means the host replied; Down means no reply. Package and system data is from the last full scan.</p></div>
+    <details class="server-sort-dropdown" data-server-sort-control>
+      <summary aria-label="View all servers and sort the table">View all servers <span aria-hidden="true">▾</span></summary>
+      <div class="server-sort-options" role="group" aria-label="Server sorting">
+        <span class="server-sort-caption">SORT BY</span>
+        <button type="button" data-server-sort="ip-asc">IP address (numeric)</button>
+        <button type="button" data-server-sort="name-asc">Name A–Z</button>
+        <button type="button" data-server-sort="name-desc">Name Z–A</button>
+        <button type="button" data-server-sort="group-asc">Group A–Z</button>
+        <button type="button" data-server-sort="updates-desc">Most OS updates</button>
+        <button type="button" data-server-sort="scan-newest">Latest scan</button>
+      </div>
+    </details>
+  </div>
+  <div class="table-scroll" data-connection-monitor data-endpoint="{% url 'dashboard_connectivity' %}">
+    <table class="data-table" data-server-table data-group-enabled="{% if server_display.group_servers %}1{% else %}0{% endif %}" data-default-sort="ip-asc">
+      <thead><tr><th>Server</th><th>Connection</th><th>Last scan</th><th>Scan time</th><th>Updates</th><th>RAM</th><th>Disk</th><th>Uptime</th></tr></thead>
+      <tbody>{% for h in hosts %}
+        <tr data-server-row data-server-ip-rank="{{ forloop.counter0 }}" data-server-name="{{ h.name }}" data-server-group="{{ h.group_name|default:'Ungrouped' }}" data-server-updates="{{ h.updates }}" data-server-scan="{{ h.scan.finished|default:'0' }}">
+          <td data-label="Server"><a class="server-link" href="{% url 'server_detail' h.id %}"><span class="machine-icon{% if h.protected %} is-protected{% endif %}" {% if h.protected %}title="Protected server" aria-label="Protected server"{% endif %}>{% if h.protected %}{% else %}▤{% endif %}</span><span><strong>{{ h.name }}</strong><small>{% if request.user.is_staff %}{{ h.address }}{% else %}Address restricted{% endif %}</small></span></a></td>
+          <td data-label="Connection" class="connection-cell"><div class="connection-pill-wrap"><span class="status neutral" data-host-connection="{{ h.id }}" title="Waiting for ICMP ping">Checking...</span><small class="ping-diagnostic" data-host-ping-diagnostic="{{ h.id }}" hidden></small></div></td>
+          <td data-label="Last scan">{% if not h.verified %}<span class="status setup-needed">Setup required</span>{% elif h.scan.state == 'completed' %}{% if h.os.metadata != 'fresh' and h.os.family == 'debian' or h.os.metadata != 'fresh' and h.os.family == 'ubuntu' %}<span class="status warn">Partial</span>{% else %}<span class="status ok">Completed</span>{% endif %}{% elif h.scan.state == 'failed' %}<span class="status danger">Failed</span>{% elif h.scan.state == 'running' %}<span class="status neutral loading">Scanning</span>{% else %}<span class="status neutral">Not scanned</span>{% endif %}</td>
+          <td data-label="Scan time" class="scan-time-column">{{ h.scan.finished|scan_time }}</td>
+          <td data-label="Updates">{% if h.scan.state == 'completed' %}{% if h.os.metadata == 'fresh' %}<strong class="num">{{ h.updates }}</strong>{% else %}<span class="muted">Unverified</span>{% endif %}{% else %}<span class="muted">Unknown</span>{% endif %}</td>
+          <td data-label="RAM">{% if h.system.memory_percent != 'unknown' and h.system.memory_percent != None %}{{ h.system.memory_percent }}%{% else %}N/A{% endif %}</td>
+          <td data-label="Disk">{% if h.system.disk_percent != 'unknown' and h.system.disk_percent != None %}{{ h.system.disk_percent }}%{% else %}N/A{% endif %}</td>
+          <td data-label="Uptime">{{ h.system.uptime|default:'N/A' }}</td>
+        </tr>{% empty %}
+        <tr><td colspan="8" class="empty-state">No servers registered yet. {% if request.user.is_superuser %}<a href="{% url 'server_add' %}">Add your first server</a>{% else %}Add your first server{% endif %}.</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</section>
 <section class="surface side-panel"><div class="surface-heading"><div><h2>Recent activity</h2><p>Scans, SSH tests, enrollment and patch jobs</p></div></div>
 <div class="activity-list">{% for a in activities %}
 <a href="{% if a.kind == 'patch' %}{% url 'job_detail' a.id %}{% else %}{% url 'activity_detail' a.id %}{% endif %}" class="activity">
 <span class="activity-mark {% if a.state == 'completed' or a.state == 'simulated' %}success{% elif a.state == 'failed' or a.state == 'partial' or a.state == 'interrupted' %}error{% endif %}"></span>
 <span><strong>{{ a.label }}</strong><small>{{ a.state|title }} · {{ a.created|scan_time }}</small></span></a>
 {% empty %}<div class="empty-minor">No background operations yet.</div>{% endfor %}</div>
-<a href="{% url 'history' %}" class="text-link panel-bottom-link">Open patch history</a></section></div>
+<a href="{% url 'history' %}" class="text-link panel-bottom-link">Open history</a></section></div>
 <p class="footnote">Connection reflects an ICMP echo reply, not SSH or application health. Servers can block ping while remaining online. Package counts, RAM, disk and uptime reflect the last full scan.</p>
 {% endblock %}

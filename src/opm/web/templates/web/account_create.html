@@ -1,0 +1,17 @@
+{% extends 'web/base.html' %}{% block breadcrumb %}Settings / Accounts / Create{% endblock %}{% block title %}Create New Account{% endblock %}
+{% block body %}
+<div class="page-intro"><div><p class="eyebrow">ACCOUNT MANAGEMENT</p><h1>Create New Account</h1><p class="subtle">Create a local OPM login and assign its permissions.</p></div><a href="{% url 'settings' %}" class="btn ghost">Back to Settings</a></div>
+<section class="surface account-security-surface">
+  <div class="surface-heading"><div><h2>New account</h2><p>Only administrators can create accounts.</p></div></div>
+  <form method="post" class="form-stack" autocomplete="off">
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="form-error">{{ form.non_field_errors }}</div>{% endif %}
+    {% for field in form %}
+      <label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}
+      {% if field.errors %}<div class="form-error">{{ field.errors }}</div>{% endif %}
+    {% endfor %}
+    <p class="muted small">Administrator manages configuration and accounts; Operator scans and patches; Viewer can monitor without seeing server IP addresses.</p>
+    <div class="form-actions"><a href="{% url 'settings' %}" class="btn ghost">Cancel</a><button type="submit" class="btn primary">Create account</button></div>
+  </form>
+</section>
+{% endblock %}

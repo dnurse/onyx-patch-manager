@@ -1,8 +1,4 @@
-"""Command-line entry point for operator UI and background controller.
-
-The regular operator needs only `opm` to open the Textual dashboard after
-installing and starting the user-level systemd controller service.
-"""
+"""Command-line tools for the web service, background controller and inventory."""
 
 from __future__ import annotations
 
@@ -18,7 +14,6 @@ from .config import Config
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agentless Onyx Patch Manager")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("tui", help="Launch mouse-enabled terminal interface")
     sub.add_parser("controller", help="Run local Unix-socket controller")
     web = sub.add_parser("web", help="Django administration (migrate, createsuperuser, check)")
     web.add_argument("args", nargs=argparse.REMAINDER)
@@ -61,8 +56,7 @@ def main() -> None:
             output = data
         print(json.dumps(output, indent=2))
     else:
-        from .ui import OPMApp
-        OPMApp().run()
+        parser.print_help()
 
 
 if __name__ == "__main__":

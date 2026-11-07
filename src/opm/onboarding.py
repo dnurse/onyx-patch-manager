@@ -72,7 +72,8 @@ from pathlib import Path
 ERRORS = {
     'ACCOUNT_EXISTS', 'ACCOUNT_MISSING', 'PASSWORD_INVALID', 'WRONG_PASSWORD',
     'ACCOUNT_PASSWORDLESS', 'NONSTANDARD_ACCOUNT', 'DELETE_NOT_APPROVED',
-    'ACCOUNT_BUSY', 'KEY_PATH_UNSAFE', 'INVALID_ACTION', 'INVALID_KEY',
+    'ACCOUNT_BUSY', 'ACCOUNT_DELETE_FAILED', 'ACCOUNT_HOME_REMAINS',
+    'KEY_PATH_UNSAFE', 'INVALID_ACTION', 'INVALID_KEY',
 }
 
 def fail(code):
@@ -101,13 +102,18 @@ def write_authorized_key(account, key, reuse=False):
     flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
     if authorized.is_symlink():
         fail('KEY_PATH_UNSAFE')
+    # A manually recreated opm account often has NO authorized_keys file.
+    # Allow securely creating it. Reject ownership mismatches only for a file
+    # that existed before we opened it; do not accept an existing root-owned
+    # or foreign-owned key file during repair/reuse.
+    authorized_existed = authorized.exists()
     # Only a regular file with one link can be safely modified in place.
     fd = os.open(authorized, flags, 0o600)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 262144:
             fail('KEY_PATH_UNSAFE')
-        if reuse and info.st_uid != account.pw_uid:
+        if reuse and authorized_existed and info.st_uid != account.pw_uid:
             fail('KEY_PATH_UNSAFE')
         os.fchown(fd, account.pw_uid, account.pw_gid)
         os.fchmod(fd, 0o600)
@@ -145,48 +151,88 @@ try:
     if details.get('account') != 'opm':
         fail('INVALID_ACTION')
     action = details.get('account_mode', 'create')
-    if action not in ('create', 'reuse', 'replace'):
+    if action not in ('create', 'reuse', 'replace', 'repair_key', 'repair_or_create'):
         fail('INVALID_ACTION')
     key = details.get('public_key', '')
     password = details.get('sudo_password', '')
     if not isinstance(key, str) or not key.startswith('ssh-ed25519 ') or any(c in key for c in ('\n', '\r', '\x00')):
         fail('INVALID_KEY')
     if (not isinstance(password, str) or '\n' in password or '\r' in password
-            or len(password) > 1024 or len(password) < (1 if action == 'reuse' else 12)):
+            or len(password) > 1024 or len(password) < (0 if action == 'repair_key' else 1 if action == 'reuse' else 12)):
         fail('PASSWORD_INVALID')
     try:
         account = pwd.getpwnam('opm')
     except KeyError:
         account = None
 
+    details['account_was_present'] = account is not None
     if action == 'create' and account is not None:
         fail('ACCOUNT_EXISTS')
-    if action in ('reuse', 'replace') and account is None:
+    if action in ('reuse', 'replace', 'repair_key') and account is None:
         fail('ACCOUNT_MISSING')
+    if action == 'repair_or_create' and details.get('create_ack') is not True:
+        fail('DELETE_NOT_APPROVED')
     if account is not None and (account.pw_uid == 0 or account.pw_dir != '/home/opm'):
         fail('NONSTANDARD_ACCOUNT')
 
     if action == 'reuse':
         verify_existing_password(password)  # MUST succeed before key mutation.
         write_authorized_key(account, key, reuse=True)
+    elif action == 'repair_key' or (action == 'repair_or_create' and account is not None):
+        # Administrator-approved, SSH-key-only repair. The existing account,
+        # password and sudo policy are left unchanged. No fallback is used by
+        # normal scans; an explicit administrator initiated this operation.
+        write_authorized_key(account, key, reuse=True)
     else:
+        if account is None and (Path('/home/opm').exists() or Path('/home/opm').is_symlink()):
+            # Do not import keys or files from a stale home owned by an old UID.
+            fail('ACCOUNT_HOME_REMAINS')
         if action == 'replace':
             if details.get('replace_ack') is not True:
                 fail('DELETE_NOT_APPROVED')
             if account.pw_uid < 1000:  # refuse to delete a reserved/system UID
                 fail('NONSTANDARD_ACCOUNT')
-            # userdel -r refuses logged-in/running accounts; never use -f.
+            # Explicit replacement may encounter the old OPM linger session.
+            # Shut down only opm's logind user sessions before normal userdel.
+            # Never use userdel -f or force-kill arbitrary processes.
+            if Path('/usr/bin/loginctl').is_file():
+                for operation in ('disable-linger', 'terminate-user'):
+                    subprocess.run(['/usr/bin/loginctl', operation, 'opm'],
+                                   capture_output=True, timeout=15, check=False)
+            # Stop the dedicated opm user manager, but never issue killall or
+            # userdel -f: these could destroy unrelated workloads. The account
+            # manager may report a nonzero exit for harmless cleanup warnings
+            # (for example, a missing /var/mail/opm spool) even though the
+            # passwd entry was successfully deleted. Verify actual state.
+            subprocess.run(['/usr/bin/systemctl', 'stop',
+                            'user@' + str(account.pw_uid) + '.service'],
+                           capture_output=True, timeout=15, check=False)
             removed = subprocess.run(['/usr/sbin/userdel', '-r', 'opm'],
                                      capture_output=True, timeout=30)
-            if removed.returncode != 0:
-                fail('ACCOUNT_BUSY')
+            try:
+                pwd.getpwnam('opm')
+            except KeyError:
+                # Account truly removed, even if userdel returned a warning.
+                pass
+            else:
+                # This error means the *account still exists*, not merely that
+                # userdel printed a warning. Do not force-delete it.
+                if removed.returncode == 8 or b'currently used by process' in (getattr(removed, 'stderr', None) or b''):
+                    fail('ACCOUNT_BUSY')
+                fail('ACCOUNT_DELETE_FAILED')
+            # If the passwd entry is gone but its home remains, do not adopt
+            # old SSH files into a different UID. Require manual review.
+            home = Path('/home/opm')
+            if home.exists() or home.is_symlink():
+                fail('ACCOUNT_HOME_REMAINS')
         subprocess.run(['/usr/sbin/useradd', '--create-home', '--shell', '/bin/bash', 'opm'], check=True)
         subprocess.run(['/usr/sbin/chpasswd'], input='opm:' + password + '\n',
                        text=True, check=True, capture_output=True)
         subprocess.run(['/usr/sbin/usermod', '-aG', 'sudo', 'opm'], check=True)
         account = pwd.getpwnam('opm')
         write_authorized_key(account, key)
-    print(json.dumps({'ok': True, 'account': 'opm', 'mode': action}))
+    actual_mode = 'create_missing' if action == 'repair_or_create' and not details.get('account_was_present', True) else action
+    print(json.dumps({'ok': True, 'account': 'opm', 'mode': actual_mode}))
 except Exception as exc:
     code = str(exc) if isinstance(exc, RuntimeError) else 'PROVISION_ERROR'
     if code not in ERRORS:
@@ -198,11 +244,11 @@ except Exception as exc:
 
 
 def _payload(public_key: str, password: str, *, mode: str = 'create',
-             replace_ack: bool = False) -> str:
+             replace_ack: bool = False, create_ack: bool = False) -> str:
     """Build a validated stdin record; reject an unapproved deletion early."""
-    if mode not in ('create', 'reuse', 'replace'):
+    if mode not in ('create', 'reuse', 'replace', 'repair_key', 'repair_or_create'):
         raise OnboardingError('Invalid account setup choice')
-    min_length = 1 if mode == 'reuse' else 12
+    min_length = 0 if mode == 'repair_key' else 1 if mode == 'reuse' else 12
     if (not isinstance(password, str) or len(password) < min_length
             or len(password) > 1024 or any(c in password for c in "\n\r\x00")):
         raise OnboardingError("Choose an OPM sudo password of at least 12 characters without line breaks"
@@ -211,9 +257,11 @@ def _payload(public_key: str, password: str, *, mode: str = 'create',
         raise OnboardingError("Invalid OPM public key")
     if mode == 'replace' and replace_ack is not True:
         raise OnboardingError('Explicit approval is required to delete the existing OPM account')
+    if mode == 'repair_or_create' and create_ack is not True:
+        raise OnboardingError('Explicit approval is required to create a missing OPM account')
     return json.dumps({"account": "opm", "public_key": public_key,
                        "sudo_password": password, "account_mode": mode,
-                       "replace_ack": replace_ack}) + "\n"
+                       "replace_ack": replace_ack, "create_ack": create_ack}) + "\n"
 
 
 def probe_managed_account(host: dict, admin_user: str, login_password: str,
@@ -272,7 +320,9 @@ _PROVISION_ERRORS = {
     'ACCOUNT_PASSWORDLESS': 'Existing opm account permits passwordless sudo. Review its configuration before reuse.',
     'NONSTANDARD_ACCOUNT': 'Existing opm account has an unexpected home directory or unsafe identity. Inspect it manually.',
     'DELETE_NOT_APPROVED': 'Account replacement was not explicitly approved.',
-    'ACCOUNT_BUSY': 'The existing opm account could not be removed. Check for running processes before retrying.',
+    'ACCOUNT_BUSY': 'The old opm account is still in use and was not removed. Check sudo ps -u opm -o pid,cmd on the target; stop the relevant processes before retrying. No forced deletion occurred.',
+    'ACCOUNT_DELETE_FAILED': 'The old opm account still exists after the deletion attempt. Inspect userdel and account state on the target before retrying. No forced deletion occurred.',
+    'ACCOUNT_HOME_REMAINS': 'The old opm account was removed, but /home/opm still exists. OPM stopped before recreating it so old SSH keys and files cannot silently be reused. Inspect or remove that home manually before retrying.',
     'KEY_PATH_UNSAFE': 'Existing SSH authorization path is unsafe; inspect it before retrying.',
     'PASSWORD_INVALID': 'Remote account password did not meet the selected mode requirements.',
     'INVALID_ACTION': 'Invalid remote account setup action.',
@@ -283,7 +333,8 @@ _PROVISION_ERRORS = {
 
 def bootstrap_account(host: dict, config: Config, admin_user: str, login_password: str,
                       admin_sudo_password: str, opm_password: str, *,
-                      mode: str = 'create', replace_ack: bool = False) -> dict:
+                      mode: str = 'create', replace_ack: bool = False,
+                      create_ack: bool = False) -> dict:
     """Create, reuse, or explicitly replace the remote OPM account via SSH.
 
     Paramiko enforces the approved known_hosts key. Reuse checks the existing
@@ -299,9 +350,10 @@ def bootstrap_account(host: dict, config: Config, admin_user: str, login_passwor
     if any(c in admin_sudo_password for c in ("\n", "\r", "\x00")):
         raise OnboardingError("Invalid administrator sudo password")
     identity = ensure_managed_key(config)
-    data = _payload(identity["public_key"], opm_password, mode=mode, replace_ack=replace_ack)
-    if mode == 'replace' and admin_user == 'opm':
-        raise OnboardingError('Use a separate administrator account when replacing opm')
+    data = _payload(identity["public_key"], opm_password, mode=mode,
+                    replace_ack=replace_ack, create_ack=create_ack)
+    if mode in ('replace', 'repair_key', 'repair_or_create') and admin_user == 'opm':
+        raise OnboardingError('Use a separate administrator account to repair or replace opm')
     try:
         import paramiko
     except ImportError as exc:
@@ -360,4 +412,4 @@ def bootstrap_account(host: dict, config: Config, admin_user: str, login_passwor
     finally:
         client.close()
     return {"account": "opm", "key_path": identity["key_path"],
-            "sudo_mode": "password", "provisioned": True, "mode": mode}
+            "sudo_mode": "password", "provisioned": True, "mode": parsed.get('mode', mode)}

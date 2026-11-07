@@ -44,6 +44,6 @@ def test_radio_inputs_are_excluded_from_textbox_rules():
 
 def test_release_version_is_consistent():
     version = tomllib.loads((ROOT/'pyproject.toml').read_text())['project']['version']
-    assert version == '0.5.13'
+    assert tuple(map(int, version.split('.'))) >= (0, 5, 16)
     assert f'OPM_UI_VERSION="{version}"' in (ROOT/'OPMTUI.sh').read_text()
     assert f'__version__ = "{version}"' in (ROOT/'src/opm/__init__.py').read_text()

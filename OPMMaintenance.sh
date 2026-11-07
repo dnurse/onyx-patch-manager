@@ -325,7 +325,11 @@ repair_system() {
 }
 
 uninstall_system() {
-  if [[ ! -d "$APP_DIR" && ! -f "$SERVICE_DIR/opm-web.service" ]]; then
+  # A previous failed purge can leave an opm passwd entry but no application
+  # directory. Such a state must still offer Complete Uninstall to finish it.
+  if [[ ! -d "$APP_DIR" && ! -f "$SERVICE_DIR/opm-web.service" ]] &&
+     { [[ $PURGE != 1 ]] || { ! id "$APP_USER" >/dev/null 2>&1 &&
+       [[ ! -e "$APP_HOME" && ! -L "$APP_HOME" ]]; }; }; then
     echo 'OPM is not installed.'; return 0
   fi
   echo 'Uninstall stops and removes local OPM services, application files and virtualenv.'
@@ -333,27 +337,70 @@ uninstall_system() {
   if [[ $PURGE == 1 ]]; then
     echo 'WARNING: Complete uninstall selected. This deletes inventory, login accounts, SSH keys, history, and the local opm Linux account.'
     confirm 'Permanently delete OPM data, local keys, and the opm account?' 'DELETE OPM DATA' || return 1
+    # Never terminate the very SSH/login session that invoked this utility.
+    if [[ "${SUDO_USER:-}" == "$APP_USER" ]]; then
+      echo 'Complete uninstall must be run from root or a different administrator, not from the opm login.' >&2
+      return 1
+    fi
   else
     echo 'Inventory, user accounts, SSH keys, configuration, and log files will be PRESERVED.'
   fi
   confirm 'Remove installed OPM application?' UNINSTALL || { echo 'Uninstall cancelled.'; return 0; }
   no_active_jobs || return 1
+  if [[ -L "$APP_HOME" || ( -e "$APP_HOME" && ! -d "$APP_HOME" ) ]]; then
+    echo 'Refusing to uninstall: /home/opm is a symlink or not a directory.' >&2
+    return 1
+  fi
+  local uid='' account_home='' userdel_rc=0 userdel_output=''
   if id "$APP_USER" >/dev/null 2>&1; then
+    account_home=$(getent passwd "$APP_USER" | cut -d: -f6)
+    if [[ "$account_home" != "$APP_HOME" ]]; then
+      echo 'Refusing to uninstall: opm account home does not match /home/opm.' >&2
+      return 1
+    fi
+    uid=$(id -u "$APP_USER")
     for service in opm-web.service opm-controller.service; do
       as_opm systemctl --user disable --now "$service" >/dev/null 2>&1 || true
       rm -f -- "$SERVICE_DIR/$service"
     done
     as_opm systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$APP_DIR" "$VENV"
   if [[ $PURGE == 1 ]]; then
-    rm -rf -- "$APP_HOME/.local/share/opm" "$APP_HOME/.config/opm" "$APP_HOME/.ssh"
-    loginctl disable-linger "$APP_USER" >/dev/null 2>&1 || true
-    userdel -r "$APP_USER" >/dev/null 2>&1 || rm -rf -- "$APP_HOME"
-    echo 'OPM application, local data, SSH keys, and the opm Linux account were removed.'
+    if [[ -n "$uid" ]]; then
+      # Stop the systemd user manager as well as OPM units; otherwise userdel
+      # often refuses because the old UID still owns running user processes.
+      loginctl disable-linger "$APP_USER" >/dev/null 2>&1 || true
+      loginctl terminate-user "$APP_USER" >/dev/null 2>&1 || true
+      systemctl stop "user@${uid}.service" >/dev/null 2>&1 || true
+      # A missing /var/mail/opm spool may produce a nonfatal userdel
+      # diagnostic even if removal succeeds. Capture its stderr, then verify
+      # the account state. Never print a benign mail-spool warning on exit.
+      userdel_output=$(userdel -r "$APP_USER" 2>&1) || userdel_rc=$?
+      if id "$APP_USER" >/dev/null 2>&1; then
+        [[ -z "$userdel_output" ]] || printf '%s\n' "$userdel_output" >&2
+        echo "Complete uninstall INCOMPLETE: userdel -r opm failed (exit ${userdel_rc})." >&2
+        echo 'The opm account still exists. Its home directory has NOT been forcibly removed.' >&2
+        echo 'Check for remaining opm processes with: ps -u opm -f' >&2
+        return 1
+      fi
+      # userdel can report a cleanup warning even if account removal succeeds.
+      # In that case only, remove the known leftover service-account home.
+      if (( userdel_rc != 0 )); then
+        echo 'The opm account was removed; nonfatal account cleanup warnings were handled.'
+      fi
+    fi
+    rm -rf -- "$APP_HOME" || { echo 'Failed to remove remaining /home/opm.' >&2; return 1; }
+    # Remove only fixed root-owned OPM helpers, never the operator's source ZIP.
+    rm -f -- /usr/local/sbin/opm-installer
+    rm -rf -- /usr/local/share/opm-installer
+    echo 'Complete uninstall finished. The local opm account, home, data and keys have been removed.'
+    echo 'Remote managed-server opm accounts were not changed.'
+    OPM_UNINSTALL_COMPLETED=1
   else
+    rm -rf -- "$APP_DIR" "$VENV"
     echo 'OPM application removed. The local opm Linux account remains for safe ownership and recovery.'
     echo 'OPM private data was preserved.'
+    OPM_UNINSTALL_COMPLETED=1
   fi
 }
 
@@ -523,7 +570,12 @@ menu() {
       2) opm_ui_run_and_show ' OPM System Status ' check_system || true ;;
       3) opm_ui_run_and_show ' Repair diagnosis and result ' repair_system || true ;;
       4) opm_ui_run_and_show ' Web access result ' configure_web_access || true ;;
-      5) opm_ui_run_and_show ' Uninstall result ' choose_uninstall_mode || true ;;
+      5)
+        OPM_UNINSTALL_COMPLETED=0
+        opm_ui_run_and_show ' Uninstall result ' choose_uninstall_mode || true
+        # A completed uninstall closes the utility, not the maintenance menu.
+        [[ "${OPM_UNINSTALL_COMPLETED:-0}" == 1 ]] && return 0
+        ;;
       6) opm_ui_run_and_show ' OPM Installer Help ' help_text || true ;;
       7) return 0 ;;
     esac

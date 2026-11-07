@@ -76,7 +76,7 @@ class Controller:
         return record[1]
 
     def _remember_sudo(self, scope: str, host_id: str, password: str) -> None:
-        """Retain credentials only after a real authorized APT refresh.
+        """Retain credentials after a validated sudo check or authorized scan.
 
         The timer expires the actual plaintext reference at the deadline even
         when no further requests arrive. Reauthorization installs a new timer
@@ -192,6 +192,8 @@ class Controller:
             return sorted(records, key=lambda item: item['created'], reverse=True)[:30]
         if method == "activities.get":
             return self.store.activity(str(params.get('id', '')))
+        if method == "activities.history":
+            return self.store.recent_activities(250, include_events=True)
         if method == "web.access.configure":
             # The authenticated Django administrator is responsible for
             # authorizing this privileged local change. The controller only
@@ -222,6 +224,30 @@ class Controller:
             activity = self.store.begin_activity('ssh_test', f"Testing SSH: {host['name']}",
                                                  ['host:' + host['id']])
             self._launch_activity(self.test_host_background(activity['id'], host))
+            return {'activity_id': activity['id'], 'scheduled': 1}
+        if method == 'hosts.ssh_repair.start':
+            # Only an existing verified OPM host can use this non-destructive
+            # recovery path. The Django view separately requires Administrator.
+            host = self.store.host(str(params.get('id', '')))
+            if not host['verified'] or host['ssh_user'] != 'opm':
+                raise ValueError('Repair SSH is only available for verified OPM-managed servers')
+            fingerprint = str(params.get('fingerprint', ''))
+            if (not fingerprint.startswith('SHA256:') or len(fingerprint) > 120
+                    or params.get('trust_ack') is not True):
+                raise ValueError('Approve the current SSH host fingerprint before repair')
+            if self.store.is_locked(host['id']):
+                raise ValueError('A patch job is using this server. Retry after it finishes')
+            credentials = {key: str(params.get(key, '')) for key in
+                ('admin_user', 'login_password', 'admin_sudo_password', 'opm_password', 'new_opm_password')}
+            credentials['create_if_missing'] = params.get('create_if_missing') is True
+            if credentials['create_if_missing'] and len(credentials['new_opm_password']) < 12:
+                raise ValueError('A new opm password of at least 12 characters is required')
+            if not USER_RE.fullmatch(credentials['admin_user']) or not credentials['login_password']:
+                raise ValueError('Administrator SSH username and password are required')
+            activity = self.store.begin_activity('ssh_repair',
+                'Repairing SSH: ' + host['name'], ['host:' + host['id']])
+            self._launch_activity(self.repair_ssh_background(
+                activity['id'], host['id'], fingerprint, credentials))
             return {'activity_id': activity['id'], 'scheduled': 1}
         if method == 'hosts.account_probe':
             # Credentials are held only in this RPC and a short-lived SSH
@@ -266,7 +292,7 @@ class Controller:
             return {'activity_id': activity['id'], 'scheduled': 1}
         if method == "keys.ensure":
             identity = await asyncio.to_thread(ensure_managed_key, self.config)
-            # Never expose private key content to the TUI.
+            # Never expose private key content to web clients.
             return {"key_path": identity["key_path"]}
         if method == "hosts.probe_candidate":
             # Browser discovery occurs before a server has been registered.
@@ -367,6 +393,30 @@ class Controller:
             # credential is saved in SQLite, scan rows, or audit events.
             self._launch_activity(self.scan_many(hosts, resolved, activity['id'], scope))
             return {"scheduled": len(hosts), 'activity_id': activity['id']}
+        if method == "credentials.authorize":
+            # No APT refresh or scan. Verify password using a real sudo -k
+            # check over the managed SSH channel, then hold it in controller RAM.
+            scope = str(params.get('credential_scope', ''))
+            supplied = params.get('sudo_passwords')
+            if not _CREDENTIAL_SCOPE_RE.fullmatch(scope):
+                raise ValueError('Invalid sudo authorization session')
+            if not isinstance(supplied, dict) or not supplied or len(supplied) > 100:
+                raise ValueError('Enter a sudo password for at least one server')
+            hosts = {h['id']: h for h in self.store.hosts() if
+                     h.get('verified') and h.get('sudo_mode') == 'password'}
+            if set(supplied) - set(hosts):
+                raise ValueError('Unknown or unverified sudo authorization target')
+            for hid, password in supplied.items():
+                if not isinstance(password, str) or not password or len(password) > 2048 or any(
+                        c in password for c in '\r\n\x00'):
+                    raise ValueError('Invalid sudo credential')
+            # All-or-nothing cache: validate all first.
+            for hid, password in supplied.items():
+                if not await asyncio.to_thread(verify_sudo_password, hosts[hid], self.config, password):
+                    raise ValueError('Sudo authorization rejected for ' + sanitize(hosts[hid]['name'], 64))
+            for hid, password in supplied.items():
+                self._remember_sudo(scope, hid, password)
+            return {'authorized': len(supplied), 'ttl_seconds': SUDO_AUTH_TTL_SECONDS}
         if method == "credentials.status":
             scope = str(params.get('credential_scope', ''))
             requested = params.get('host_ids') or []
@@ -576,6 +626,18 @@ class Controller:
             # The account might have been partially created. We must not
             # automatically run provisioning again until its state is known.
             raise ValueError(f"{exc} Server saved as unverified. Open Servers and choose Finish setup after reviewing the failure. ") from None
+        # The remote bootstrap has confirmed the account operation. Persist a
+        # non-secret, accurately worded step in unified History even if the
+        # following SSH/sudo verification fails. Never record passwords,
+        # command output, or private/public SSH keys in the audit trail.
+        activity_id = str(params.get('_activity_id', ''))
+        if activity_id:
+            account_event = {
+                'replace': 'Existing remote opm account deleted and recreated; new controller SSH key installed',
+                'reuse': 'Existing remote opm account reused; new controller SSH key authorized',
+                'create': 'Dedicated remote opm account created; controller SSH key installed',
+            }[account_mode]
+            self.store.activity_progress(activity_id, account_event)
         updated = self.store.update_host(host["id"], {**host, **fields,
             "key_path": result["key_path"], "sudo_mode": "password"},
             activity_owner=str(params.get("_activity_id", "")))
@@ -589,6 +651,81 @@ class Controller:
                     "warning": "Account created, but SSH key test failed. Inspect the server before retrying."}
         self.store.verified(host["id"], True)
         return {"host_id": host["id"], "verified": True}
+
+    def repair_ssh_host(self, host_id: str, fingerprint: str,
+                        credentials: dict, activity_id: str) -> dict:
+        """Restore only the controller public key on a verified, trusted host.
+
+        A separate administrator explicitly approves password-authenticated
+        recovery. Neither the existing opm account nor its sudo policy is
+        changed. Normal scans never fall back to password-based SSH.
+        """
+        host = self.store.host(host_id)
+        if not host['verified'] or host['ssh_user'] != 'opm':
+            raise ValueError('Only previously verified opm hosts support SSH repair')
+        if self.store.is_locked(host_id):
+            raise ValueError('Cannot repair SSH while a patch job is active')
+        # This re-checks the remote identity and refuses a changed known key.
+        # It occurs BEFORE opening password-authenticated SSH.
+        accept_host_key(host, self.config, fingerprint)
+        admin_password = credentials['login_password']
+        sudo_password = credentials['admin_sudo_password'] or admin_password
+        # Use the dedicated key-only remote action, authorized by the separate
+        # administrator's SSH and sudo credentials. This can restore SSH even
+        # when the manually recreated opm account lacks sudo membership.
+        # The opm password is NOT sent to remote provisioning.
+        allow_create = credentials.get('create_if_missing') is True
+        result = bootstrap_account(host, self.config,
+            credentials['admin_user'], admin_password, sudo_password,
+            credentials['new_opm_password'] if allow_create else '',
+            mode='repair_or_create' if allow_create else 'repair_key',
+            replace_ack=False, create_ack=allow_create)
+        account_created = result.get('mode') == 'create_missing'
+        self.store.activity_progress(activity_id,
+            'Missing remote opm account created; sudo group assigned; controller SSH key installed'
+            if account_created else
+            'Existing remote opm account preserved; controller SSH public key authorized')
+        candidate = {**host, 'key_path': result['key_path']}
+        test_connection(candidate, self.config)
+        if host['key_path'] != result['key_path']:
+            self.store.update_host(host_id, candidate, activity_owner=activity_id)
+        self.store.verified(host_id, True)
+        verification_password = (credentials['new_opm_password'] if account_created
+                                 else credentials['opm_password'])
+        sudo_ok = bool(verification_password) and verify_sudo_password(
+            candidate, self.config, verification_password)
+        return {'host_id': host_id, 'ssh_recovered': True,
+                'account_created': account_created, 'sudo_verified': sudo_ok}
+
+    async def repair_ssh_background(self, activity_id: str, host_id: str,
+                                    fingerprint: str, credentials: dict) -> None:
+        try:
+            async with self._enrollment_lock:
+                self.store.activity_progress(activity_id,
+                    'Rechecking trusted SSH host key and administrator credentials')
+                result = await asyncio.to_thread(
+                    self.repair_ssh_host, host_id, fingerprint, credentials, activity_id)
+                if result['sudo_verified']:
+                    self.store.activity_finish(activity_id, 'completed',
+                        ('SSH restored: missing opm account recreated; controller key and sudo verified'
+                         if result.get('account_created') else
+                         'SSH restored: existing opm account and password preserved; controller key and sudo verified'), result)
+                else:
+                    self.store.activity_progress(activity_id,
+                        'Controller SSH key verified; opm sudo access still requires attention')
+                    self.store.activity_finish(activity_id, 'partial',
+                        'SSH restored, but opm sudo access was not verified. Check the account sudo policy on the managed server before patching.', result)
+        except Exception as exc:
+            error = str(exc)
+            for secret in credentials.values():
+                if isinstance(secret, str) and secret:
+                    error = error.replace(secret, '[REDACTED]')
+            self.store.activity_progress(activity_id, 'SSH repair failed', completed=1, failed=1)
+            self.store.activity_finish(activity_id, 'failed',
+                'SSH recovery unsuccessful. No account deletion was performed. ' + sanitize(error, 2200))
+        finally:
+            for key in list(credentials):
+                credentials.pop(key, None)
 
     def _launch_activity(self, coroutine) -> None:
         """Run a coroutine after the HTTP response has already returned.
@@ -638,7 +775,8 @@ class Controller:
             self.store.activity_progress(activity_id, 'SSH authentication failed',
                                          completed=1, failed=1)
             self.store.activity_finish(activity_id, 'failed',
-                                       'SSH test failed: ' + sanitize(str(exc), 180))
+                                       'SSH test failed: ' + sanitize(str(exc), 180),
+                                       {'host_id': host['id']})
 
     async def enroll_background(self, activity_id: str, params: dict) -> None:
         """Provision one host with controller-memory-only bootstrap secrets.
@@ -662,8 +800,10 @@ class Controller:
                     # registered host releases its host: lock before the new
                     # scan claims it. Never expose/bootstrap passwords in logs.
                     self.store.activity_progress(activity_id, 'SSH and sudo verified', completed=1)
-                    self.store.activity_finish(activity_id, 'completed',
-                        'Server enrollment completed; scheduling initial scan',
+                    detail = ('Existing opm account replaced; SSH and sudo verified; scheduling initial scan'
+                              if params.get('account_mode') == 'replace'
+                              else 'Server enrollment completed; scheduling initial scan')
+                    self.store.activity_finish(activity_id, 'completed', detail,
                         {'host_id': result['host_id'], 'verified': True})
                     host = self.store.host(result['host_id'])
                     try:
@@ -696,7 +836,7 @@ class Controller:
                     error = error.replace(secret, '[REDACTED]')
             self.store.activity_progress(activity_id, 'Server enrollment failed', completed=1, failed=1)
             self.store.activity_finish(activity_id, 'failed',
-                'Provisioning failed. Review the server before retrying. ' + sanitize(error, 160))
+                'Provisioning failed. Review the server before retrying. ' + sanitize(error, 3000))
         finally:
             for key in ('login_password', 'admin_sudo_password', 'opm_password', '_activity_id'):
                 params.pop(key, None)
@@ -708,6 +848,7 @@ class Controller:
         secrets = passwords if passwords is not None else {}
         completed = 0
         failed = 0
+        failed_names: list[str] = []
         warnings = 0
         self.store.activity_progress(activity_id, 'Connecting to managed servers') if activity_id else None
 
@@ -720,9 +861,16 @@ class Controller:
                 try:
                     data = await asyncio.to_thread(inspect_host, host, self.config, secrets.get(host['id']))
                     self.store.finish_scan(scan_id, data)
-                    if data.get('os', {}).get('apt_error'):
+                    apt_warning = data.get('os', {}).get('apt_error')
+                    if apt_warning:
                         warnings += 1
-                    elif (credential_scope and host.get('sudo_mode') == 'password'
+                        if activity_id:
+                            self.store.activity_progress(activity_id,
+                                'Scan warning for ' + host['name'] + ': ' + sanitize(str(apt_warning), 380))
+                    else:
+                        if activity_id:
+                            self.store.activity_progress(activity_id, 'Scan succeeded: ' + host['name'])
+                    if not apt_warning and (credential_scope and host.get('sudo_mode') == 'password'
                           and data.get('os', {}).get('metadata') == 'fresh'
                           and secrets.get(host['id'])):
                         # Do not cache a guessed or failed sudo password.
@@ -731,8 +879,16 @@ class Controller:
                     diagnostic = str(exc)
                     if secrets.get(host['id']):
                         diagnostic = diagnostic.replace(secrets[host['id']], '[REDACTED]')
-                    self.store.finish_scan(scan_id, None, sanitize(diagnostic))
+                    safe_error = sanitize(diagnostic, 520)
+                    self.store.finish_scan(scan_id, None, safe_error)
+                    failed_names.append(host['name'])
                     failed += 1
+                    if activity_id:
+                        # Log host identity and a bounded sanitized reason so
+                        # another administrator can diagnose partial Scan all.
+                        # No SSH/sudo passwords, raw commands or private keys.
+                        self.store.activity_progress(activity_id,
+                            'Scan failed for ' + host['name'] + ': ' + safe_error)
                 finally:
                     secrets.pop(host['id'], None)
                     completed += 1
@@ -746,6 +902,8 @@ class Controller:
                 state = ('failed' if failed == len(hosts) else
                          'partial' if failed or warnings else 'completed')
                 detail = f'{completed} scanned, {failed} failed, {warnings} warnings'
+                if failed_names:
+                    detail += '; failed servers: ' + ', '.join(sorted(failed_names))
                 self.store.activity_finish(activity_id, state, detail)
         except Exception as exc:
             if activity_id:
@@ -823,7 +981,7 @@ class Controller:
 
 
 async def rpc(method: str, params: dict | None = None, config: Config | None = None) -> object:
-    """One-shot client RPC used by the Textual UI and the command-line tools."""
+    """One-shot client RPC used by internal web and command-line operations."""
     config = config or Config.load()
     reader, writer = await asyncio.open_unix_connection(str(config.socket))
     try:

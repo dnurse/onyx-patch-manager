@@ -1,0 +1,37 @@
+{% extends 'web/base.html' %}{% load static %}
+{% block breadcrumb %}Servers / {{ host.name }} / Repair SSH{% endblock %}
+{% block title %}Repair SSH access{% endblock %}
+{% block extra_head %}<script defer src="{% static 'web/repair_ssh.js' %}"></script>{% endblock %}
+{% block body %}
+<div class="page-intro"><div><p class="eyebrow">ADMINISTRATOR RECOVERY</p><h1>Repair SSH access</h1><p class="subtle">{{ host.name }} · Restore this controller's SSH key, or create a missing opm account with explicit approval.</p></div><a class="btn ghost" href="{% url 'server_detail' host.id %}">Back to server</a></div>
+<section class="surface account-security-surface">
+<div class="surface-heading"><div><h2>Verify identity and authorize recovery</h2><p>Manual action only. Normal scans never fall back to passwords.</p></div></div>
+<form method="post" class="form-stack ssh-repair-form" autocomplete="off" data-fingerprint-url="{% url 'enrollment_fingerprint' %}">
+{% csrf_token %}
+<input type="hidden" name="address" value="{{ host.address }}">
+<input type="hidden" name="ssh_port" value="{{ host.ssh_port }}">
+{% if form.non_field_errors %}<div class="form-error" role="alert">{{ form.non_field_errors }}</div>{% endif %}
+<p class="muted small">Confirm the fingerprint through a trusted channel before submitting credentials. A changed previously trusted SSH host key is rejected.</p>
+<button type="button" id="repair-check-fingerprint" class="btn secondary">Check SSH fingerprint</button>
+<div id="repair-fingerprint-panel" class="fingerprint-panel" hidden>
+ <label>Server ED25519 fingerprint</label><code id="repair-fingerprint-value" class="fingerprint-value"></code>
+ <label class="checkline" for="{{ form.trust_ack.id_for_label }}">{{ form.trust_ack }}<span>I verified and approve this host fingerprint.</span></label>
+</div>
+<div id="repair-fingerprint-error" class="flash error" role="alert" hidden></div>
+{{ form.fingerprint }}{% if form.fingerprint.errors %}<div class="form-error">{{ form.fingerprint.errors }}</div>{% endif %}
+{% if form.trust_ack.errors %}<div class="form-error">{{ form.trust_ack.errors }}</div>{% endif %}
+<label for="{{ form.admin_user.id_for_label }}">Administrator SSH username</label>{{ form.admin_user }}{{ form.admin_user.errors }}
+<label for="{{ form.login_password.id_for_label }}">Administrator SSH password</label>{{ form.login_password }}{{ form.login_password.errors }}
+<label for="{{ form.admin_sudo_password.id_for_label }}">Administrator sudo password (if different)</label>{{ form.admin_sudo_password }}{{ form.admin_sudo_password.errors }}
+<label for="{{ form.opm_password.id_for_label }}">Current opm sudo password (optional)</label>{{ form.opm_password }}{{ form.opm_password.errors }}
+<label class="checkline ssh-repair-create-option" for="{{ form.create_if_missing.id_for_label }}">{{ form.create_if_missing }}<span>If the remote opm account is missing, create a replacement account</span></label>
+<p class="muted small">This option never deletes an existing account. It requires an administrator login and will create a new opm account only when no such account exists. The account receives password-required sudo and the controller SSH key.</p>
+<div class="ssh-repair-create-fields" id="repair-create-fields" hidden>
+<label for="{{ form.new_opm_password.id_for_label }}">New opm sudo password (12+ characters)</label>{{ form.new_opm_password }}{{ form.new_opm_password.errors }}
+<label for="{{ form.new_opm_password_confirm.id_for_label }}">Confirm new opm password</label>{{ form.new_opm_password_confirm }}{{ form.new_opm_password_confirm.errors }}
+</div>
+<p class="muted small">A separate administrator's SSH/sudo login authorizes recovery. Existing accounts keep their passwords and sudo policy; new accounts are created only with your explicit approval. Normal scans never fall back to password authentication.</p>
+<div class="form-actions"><a href="{% url 'server_detail' host.id %}" class="btn ghost">Cancel</a><button type="submit" id="repair-submit" class="btn primary" disabled>Verify and repair SSH</button></div>
+</form>
+</section>
+{% endblock %}

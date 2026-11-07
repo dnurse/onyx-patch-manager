@@ -55,7 +55,10 @@ def test_roles_and_account_edit_contract():
     assert "'accounts.role.change'" in views
     assert "User.objects.filter(is_active=True, is_superuser=True).count() <= 1" in views
     assert "name='edit_account'" in urls
-    assert "name=\"action\" value=\"create_account\"" in settings_html
+    assert "{% url 'create_account' %}" in settings_html
+    assert "name='create_account'" in urls
+    assert 'form.username' not in settings_html
+    assert (WEB/'templates/web/account_create.html').exists()
     assert "{% url 'edit_account' a.pk %}" in settings_html
     assert 'form.role' in editor and 'form.new_password' in editor
     assert 'form.confirm_password' in editor

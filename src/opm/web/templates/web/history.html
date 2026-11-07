@@ -1,28 +1,53 @@
 {% extends 'web/base.html' %}{% load opm_display %}{% block breadcrumb %}History{% endblock %}{% block title %}History{% endblock %}
 {% block body %}
-<div class="page-intro"><div><p class="eyebrow">AUDIT AND EXECUTION</p><h1>Patch history</h1><p class="subtle">Review attempts, completion states and errors. Interrupted operations are never replayed automatically.</p></div></div>
-<section class="surface"><div class="surface-heading"><div><h2>Recent jobs</h2><p>{{ jobs|length }} records shown</p></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Run ID</th><th>Status</th><th>Created</th><th>Last error</th><th></th></tr></thead><tbody>{% for j in jobs %}<tr><td class="monospace" data-label="Run ID">{{ j.id|short_id }}</td><td data-label="Status"><span class="status {% if j.state == 'completed' or j.state == 'simulated' %}ok{% elif j.state == 'failed' or j.state == 'interrupted' %}danger{% else %}neutral{% endif %}">{% if j.state == 'simulated' %}Simulated{% else %}{{ j.state|title }}{% endif %}</span></td><td data-label="Created">{{ j.created|scan_time }}</td><td data-label="Last error">{{ j.error|default:'N/A'|truncatechars:90 }}</td><td data-label="Details"><a href="{% url 'job_detail' j.id %}" class="table-action">View</a></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">No patch jobs have been submitted.</td></tr>{% endfor %}</tbody></table></div></section>
+<div class="page-intro"><div><p class="eyebrow">OPERATIONS AND AUDIT</p><h1>History</h1><p class="subtle">Patch jobs, enrollment, scans, SSH checks and other controller activity. Administrators also see account and settings audit actions. Interrupted operations are never replayed automatically.</p></div></div>
+<section class="surface">
+  <div class="surface-heading history-heading"><div><h2>All history</h2><p>{{ items|length }} records shown. Select which events to display and sort chronologically.</p></div>
+    <form method="get" action="{% url 'history' %}" class="history-filters" data-history-filters>
+      <input type="hidden" name="filter" value="1">
+      <label class="history-filter-checkbox"><input type="checkbox" name="patches" value="1" {% if show_patches %}checked{% endif %}><span>Patches</span></label>
+      <label class="history-filter-checkbox"><input type="checkbox" name="activities" value="1" {% if show_activities %}checked{% endif %}><span>Activity</span></label>
+      <label class="history-sort-label" for="history-sort">Sort
+        <select name="sort" id="history-sort"><option value="newest" {% if sort_order == 'newest' %}selected{% endif %}>Newest first</option><option value="oldest" {% if sort_order == 'oldest' %}selected{% endif %}>Oldest first</option></select>
+      </label>
+      <button type="submit" class="btn secondary">Apply</button>
+    </form>
+  </div>
+  <div class="table-scroll"><table class="data-table history-table">
+    <thead><tr><th>Type</th><th>Operation</th><th>Status</th><th>Created</th><th>Details / diagnostic log</th><th></th></tr></thead>
+    <tbody>{% for item in items %}
+      <tr><td data-label="Type"><span class="status neutral">{% if item.type == 'patch' %}Patch{% elif item.type == 'audit' %}Audit{% else %}Activity{% endif %}</span></td>
+        <td data-label="Operation"><strong>{{ item.label }}</strong>{% if item.type == 'activity' %}<small class="history-kind">{{ item.kind|title }}</small>{% elif item.type == 'audit' %}<small class="history-kind">By {{ item.actor }}</small>{% endif %}</td>
+        <td data-label="Status"><span class="status {% if item.state == 'completed' or item.state == 'simulated' %}ok{% elif item.state == 'failed' or item.state == 'interrupted' or item.state == 'partial' or item.state == 'partially_completed' %}danger{% else %}neutral{% endif %}">{{ item.state|title }}</span></td>
+        <td data-label="Created">{{ item.created|scan_time }}</td>
+        <td data-label="Details / diagnostic log" class="history-detail-cell">
+          {% if item.events or item.detail %}
+          <details class="history-log"><summary title="Click to expand the full saved diagnostic log">{{ item.detail|default:'View event log'|truncatechars:85 }}</summary>
+            <div class="history-log-content">
+              {% if item.detail %}<p>{{ item.detail }}</p>{% endif %}
+              {% for entry in item.events %}<div class="history-event"><time>{{ entry.timestamp|scan_time }}</time><span>{{ entry.message }}</span></div>{% endfor %}
+              {% if item.type == 'patch' %}<p class="muted small">Open the patch job to inspect its per-task Ansible events.</p>{% elif item.type == 'audit' %}<p class="muted small">Security audit entry; no remote task log applies.</p>{% elif not item.events %}<p class="muted small">No detailed events were recorded by this earlier OPM version.</p>{% endif %}
+            </div>
+          </details>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td data-label="Details">{% if item.type == 'patch' %}<a class="table-action" href="{% url 'job_detail' item.id %}">View job</a>{% elif item.type == 'activity' %}<a class="table-action" href="{% url 'activity_detail' item.id %}">View activity</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+    {% empty %}<tr><td colspan="6" class="empty-state">No matching history records. Enable Patches or Activity to view records.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
 {% if request.user.is_superuser %}
 <section class="surface history-controls">
-  <div class="surface-heading"><div><h2>History maintenance</h2><p>Manage old results without changing managed servers or scan findings.</p></div></div>
+  <div class="surface-heading"><div><h2>History maintenance</h2><p>Manage old records without changing managed servers or scan findings.</p></div></div>
   <div class="history-actions compact-cards">
     <form method="post" action="{% url 'dismiss_alerts' %}" class="history-card">
-      {% csrf_token %}
-      <div>
-        <p class="muted small">Dismiss old error notifications. Patch records and errors remain available for review.</p>
-      </div>
-      <div class="history-card-footer end-only">
-        <button class="btn secondary" type="submit">Acknowledge past failures</button>
-      </div>
+      {% csrf_token %}<div><p class="muted small">Dismiss old failure notifications. Patch records and errors remain available for review.</p></div>
+      <div class="history-card-footer end-only"><button class="btn secondary" type="submit">Acknowledge past failures</button></div>
     </form>
     <form method="post" action="{% url 'clear_history' %}" class="history-card" data-opm-loading="Clearing patch history">
-      {% csrf_token %}
-      <div>
-        <p class="muted small">Permanently delete completed patch job records and their task logs. Server inventory, scans and account audit history are preserved.</p>
-      </div>
+      {% csrf_token %}<div><p class="muted small">Permanently delete completed patch job records and their task logs. Other activity and security audit history is preserved.</p></div>
       <div class="history-card-footer split-row">
-        <label class="confirm-inline"><input type="checkbox" name="confirm_clear" value="yes" required>
-          <span>I understand patch job history will be deleted.</span></label>
+        <label class="confirm-inline"><input type="checkbox" name="confirm_clear" value="yes" required><span>I understand patch job history will be deleted.</span></label>
         <button class="btn danger-button" type="submit">Clear patch history</button>
       </div>
     </form>

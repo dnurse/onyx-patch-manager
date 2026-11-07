@@ -7,7 +7,7 @@
 #  - Preserve SSH identities, Django signing keys and the existing SQLite DB.
 #  - Refuse upgrades when a patch job is active or its state is uncertain.
 #  - Choose local, LAN, or explicitly configured internal HTTPS-proxy access.
-#  - Show only the current step and a progress bar on an interactive terminal.
+#  - Keep completed, active, and upcoming stages visible with a real progress bar.
 #  - Capture detailed non-secret command output in a root-only log. On failure,
 #    display a short diagnostic tail and the log path instead of flooding stdout.
 #  - Progress is the share of completed stages, NOT guessed apt/pip download
@@ -125,6 +125,27 @@ esac
 LOG_DIR=/var/log/opm-installer
 LOG_FILE="$LOG_DIR/install-$TIMESTAMP.log"
 TOTAL_STEPS=15
+# Single source of truth for the progress checklist. The Whiptail gauge shows
+# the entire operation (completed, current and upcoming steps) rather than a
+# rolling window that loses earlier completed stages. Keep this array in the
+# same order as the start_step calls below.
+OPM_UI_STAGES=(
+  'Checking existing patch jobs'
+  'Refreshing Debian package indexes'
+  'Installing Python and required system packages'
+  'Preparing the dedicated OPM service account'
+  'Preparing private web configuration'
+  'Stopping OPM services safely'
+  'Backing up inventory, accounts and patch history'
+  'Installing OPM application files'
+  'Preparing Python virtual environment'
+  'Installing OPM Python dependencies'
+  'Verifying Ansible Core executable'
+  'Applying database migrations and static files'
+  'Configuring controller and web services'
+  'Checking administrator account'
+  'Verifying OPM controller and web service'
+)
 COMPLETED=0
 CURRENT_STEP=""
 PREVIOUS_RENDER=0
@@ -299,6 +320,17 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 [[ "$(getent passwd "$APP_USER" | cut -d: -f6)" == "$APP_HOME" ]] || \
   fail 'The existing opm user has an unexpected home directory.'
+# Earlier complete-uninstall releases could delete /home/opm after userdel -r
+# FAILED, leaving the Linux account registered but without a home directory.
+# Recover that exact known service-account state without changing its UID,
+# recreating unrelated users, or replacing any surviving inventory or keys.
+if [[ -L "$APP_HOME" || ( -e "$APP_HOME" && ! -d "$APP_HOME" ) ]]; then
+  fail 'The opm home path is a symlink or not a directory; refusing unsafe recovery.'
+fi
+if [[ ! -d "$APP_HOME" ]]; then
+  printf 'Repairing missing home directory for existing opm service account.\n' >>"$LOG_FILE"
+fi
+run_logged install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_HOME"
 run_logged loginctl enable-linger "$APP_USER"
 UID_OPM="$(id -u "$APP_USER")"
 run_logged systemctl start "user@${UID_OPM}.service"
@@ -415,6 +447,12 @@ end_step
 
 start_step 'Installing OPM Python dependencies'
 run_logged as_opm "$VENV/bin/pip" install -e "$APP_DIR"
+# The former Textual dashboard was retired in v0.5.24. Its distribution is
+# no longer a dependency. Remove it from OPM's dedicated virtual environment
+# when upgrading; the native Whiptail installer does not use this library.
+if as_opm "$VENV/bin/pip" show textual >/dev/null 2>&1; then
+  run_logged as_opm "$VENV/bin/pip" uninstall -y textual
+fi
 end_step
 
 start_step 'Verifying Ansible Core executable'

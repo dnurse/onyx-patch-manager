@@ -20,7 +20,7 @@
       <a class="nav-link {% if page == 'patch' %}active{% endif %}" href="{% url 'patch_manager' %}">Patch Manager</a>
       <a class="nav-link {% if page == 'servers' %}active{% endif %}" href="{% url 'servers' %}">Servers</a>
       <a class="nav-link {% if page == 'history' %}active{% endif %}" href="{% url 'history' %}">History</a>
-      <a class="nav-link {% if page == 'settings' %}active{% endif %}" href="{% url 'settings' %}">Settings</a>
+      {% if request.user.is_staff %}<a class="nav-link {% if page == 'settings' %}active{% endif %}" href="{% url 'settings' %}">Settings</a>{% endif %}
     </nav>
     <div class="sidebar-bottom">
       <div class="controller-mini"><span id="opm-controller-indicator" class="dot {% if controller.status == "ready" %}good{% else %}bad{% endif %}" role="img" aria-label="Local controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" title="Local controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" data-health-url="{% url 'controller_health' %}"></span><span>LOCAL CONTROLLER</span></div>
@@ -37,7 +37,7 @@
       <section id="opm-activity-panel" class="activity-dropdown" hidden aria-label="Background activity">
         <div class="activity-dropdown-head"><strong>Background activity</strong><span id="opm-activity-freshness">Updating...</span></div>
         <div id="opm-activity-items" class="activity-dropdown-list"><p class="muted small">Checking the controller...</p></div>
-        <a class="activity-dropdown-footer" href="{% url 'history' %}">Patch history</a>
+        <a class="activity-dropdown-footer" href="{% url 'history' %}">History</a>
       </section>
     </div><span class="top-version">v{{ opm_version }}</span><form method="post" action="{% url 'logout' %}" class="mobile-logout">{% csrf_token %}<button type="submit" aria-label="Sign out">Sign out</button></form></div></header>
     <main class="main-content" id="content">

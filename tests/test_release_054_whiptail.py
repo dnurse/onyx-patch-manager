@@ -88,8 +88,8 @@ def test_whiptail_gauge_receives_progress(tmp_path):
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     content=(tmp_path/'gauge.log').read_text()
-    assert '20\nINSTALLING ONYX PATCH MANAGER' in content and '[ ] Installing dependencies' in content
-    assert '100\nINSTALLING ONYX PATCH MANAGER' in content and '[x] Operation complete' in content
+    assert '20\nINSTALLING ONYX PATCH MANAGER' in content and '▶  Installing dependencies' in content
+    assert '100\nINSTALLING ONYX PATCH MANAGER' in content and '▶  Installation complete' in content
 
 
 def test_explicit_tui_access_selection_reuses_strict_backend(tmp_path, monkeypatch):

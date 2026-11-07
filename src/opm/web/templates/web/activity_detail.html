@@ -1,10 +1,10 @@
-{% extends 'web/base.html' %}
+{% extends 'web/base.html' %}{% load opm_display %}
 {% block breadcrumb %}Activity / {{ item.kind|title }}{% endblock %}
 {% block title %}Background activity{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">BACKGROUND OPERATION</p>
 <h1>{{ item.label }}</h1><p class="subtle">You can move to any page. The controller continues the operation.</p></div>
-<a class="btn ghost" href="{% url 'servers' %}">View servers</a></div>
+<a class="btn ghost" href="{% url 'history' %}">Back to history</a></div>
 <section class="surface activity-detail-surface" data-activity-detail="{{ item.id }}">
   <div class="surface-heading"><div><h2>Operation status</h2>
     <p>Persistent controller progress, not an estimated percentage</p></div>
@@ -16,6 +16,11 @@
       <div class="activity-progress-fill" style="width:0%" data-activity-progress></div></div>
     <p class="muted small" data-activity-numbers>{{ item.completed }} of {{ item.total }} completed</p>
     <div data-activity-result></div>
+    <details class="history-log activity-full-log"><summary>Show full saved diagnostic log</summary>
+      <div class="history-log-content"><p>{{ item.detail }}</p>
+        {% for entry in item.events %}<div class="history-event"><time>{{ entry.timestamp|scan_time }}</time><span>{{ entry.message }}</span></div>{% empty %}<p class="muted small">No detailed log recorded for this operation.</p>{% endfor %}
+      </div>
+    </details>
     <p class="muted small">If the controller restarts during setup, OPM marks the action interrupted and does not replay remote changes automatically.</p>
   </div>
 </section>

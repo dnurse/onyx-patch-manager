@@ -1,6 +1,5 @@
 """No public signup, raw RPC relay, arbitrary shell, or admin debug endpoint."""
-from django.urls import path, reverse_lazy
-from django.contrib.auth.views import PasswordChangeView
+from django.urls import path
 from django.contrib.auth.decorators import login_required
 from . import views
 
@@ -15,6 +14,7 @@ urlpatterns = [
     path('servers/enroll/fingerprint/', views.enrollment_fingerprint, name='enrollment_fingerprint'),
     path('servers/enroll/account/', views.enrollment_account_probe, name='enrollment_account_probe'),
     path('servers/<str:host_id>/setup/', views.server_enroll, name='server_enroll'),
+    path('servers/<str:host_id>/repair-ssh/', views.server_repair_ssh, name='server_repair_ssh'),
     path('servers/<str:host_id>/edit/', views.server_edit, name='server_edit'),
     path('servers/<str:host_id>/', views.server_detail, name='server_detail'),
     path('servers/<str:host_id>/action/<str:action>/', views.host_action, name='host_action'),
@@ -34,8 +34,9 @@ urlpatterns = [
     path('history/<str:job_id>/', views.job_detail, name='job_detail'),
     path('history/<str:job_id>/cancel/', views.cancel_job, name='cancel_job'),
     path('settings/', views.settings_view, name='settings'),
-    path('settings/password/', login_required(PasswordChangeView.as_view(
-        template_name='web/change_password.html', success_url=reverse_lazy('settings'))), name='change_password'),
+    path('settings/password/', login_required(views.OPMPasswordChangeView.as_view(
+        template_name='web/change_password.html')), name='change_password'),
+    path('settings/users/new/', views.create_account, name='create_account'),
     path('settings/users/<int:user_id>/edit/', views.edit_account, name='edit_account'),
     path('settings/users/<int:user_id>/disable/', views.disable_account, name='disable_account'),
 ]

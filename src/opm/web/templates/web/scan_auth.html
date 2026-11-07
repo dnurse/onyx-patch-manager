@@ -3,8 +3,8 @@
 {% block title %}Authorize read-only scan{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">READ-ONLY DISCOVERY</p>
-<h1>Authorize server scan</h1>
-<p class="subtle">Scan package updates and Docker/Podman containers without installing updates or restarting anything.</p></div>
+<h1>Scan authorization</h1>
+<p class="subtle">Enter sudo credentials when required to scan package updates and containers. Scanning does not install updates or restart containers.</p></div>
 <a class="btn ghost" href="{% url 'patch_manager' %}">Cancel</a></div>
 <section class="surface form-panel scan-auth-panel">
 <div class="surface-heading"><div><h2>Selected servers</h2>
@@ -13,7 +13,7 @@
 {% for host in hosts %}<div class="key-value"><span>{{ host.name }}</span><strong>{% if host.sudo_mode == 'password' %}{% if host.sudo_cached_seconds %}Authorized ({{ host.sudo_cached_seconds }}s remaining){% else %}Sudo password required{% endif %}{% elif host.sudo_mode == 'read_only' %}Read-only, limited detection{% else %}Existing privileged policy{% endif %}</strong></div>{% empty %}<p>No verified servers available.</p>{% endfor %}
 </div>
 {% if hosts %}
-<form method="post" action="{% url 'scan_all' %}" class="form-stack" autocomplete="off" data-opm-loading="Scanning servers and containers" data-opm-loading-detail="Checking package indexes, Docker and Podman. No updates are being installed.">
+<form method="post" action="{% url 'scan_all' %}" class="form-stack" autocomplete="off">
 {% csrf_token %}<input type="hidden" name="host_id" value="{{ host_id }}">
 {% if password_hosts %}
 <label for="scan-shared-password">Sudo password (leave blank for hosts already authorized in this session)</label>
@@ -27,7 +27,7 @@
 <div class="warning-banner full-width-banner"><strong>Scope of this operation</strong>
 <p>APT package indexes may be refreshed. Docker and Podman containers are inspected through their command-line tools. No packages or container images will be installed, pulled, or restarted. Successful authorization is held only in controller memory for up to 10 minutes, per login session. It is never saved to SQLite or browser storage.</p></div>
 <div class="form-actions"><a class="btn ghost" href="{% url 'patch_manager' %}">Cancel</a>
-<button class="btn primary" type="submit">Start scan</button></div>
+<button class="btn primary" type="submit" name="action" value="scan" data-opm-loading="Scanning servers and containers">Start scan</button></div>
 </form>{% endif %}
 </section>
 {% endblock %}

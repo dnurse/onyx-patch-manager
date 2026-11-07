@@ -33,10 +33,14 @@ import sys
 import pwd
 
 
-def run(args, timeout=22):
+def run(args, timeout=22, cwd=None):
+    # A privileged SSH discovery script starts in the SSH user's home (often
+    # /home/opm, mode 0700). Rootless Podman owners cannot traverse that path.
+    # Set an explicit, publicly traversable cwd before switching user IDs.
     try:
         p = subprocess.run(args, text=True, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=timeout, check=False)
+                           stderr=subprocess.PIPE, timeout=timeout, check=False,
+                           cwd=cwd)
         return p.returncode, p.stdout, p.stderr
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, "", str(exc)
@@ -148,7 +152,8 @@ def image_status(engine, image_id, image_ref, prefix=None):
 
 
 def containers(engine, prefix=None, scope='OPM SSH user',
-               query_timeout=22, inspect_timeout=35, registry_checks=True):
+               query_timeout=22, inspect_timeout=35, registry_checks=True,
+               working_directory=None):
     """Inspect only the requested Podman/Docker user namespace.
 
     ``prefix`` is a fixed argv list assembled from trusted system account
@@ -159,14 +164,18 @@ def containers(engine, prefix=None, scope='OPM SSH user',
         return {'available': False, 'installed': False, 'error': '',
                 'containers': [], 'scope': scope}
     args = prefix or []
-    rc, output, error = run(args + [engine, 'ps', '-aq'], query_timeout)
+    def run_in_scope(argv, timeout):
+        if working_directory is None:
+            return run(argv, timeout)
+        return run(argv, timeout, cwd=working_directory)
+    rc, output, error = run_in_scope(args + [engine, 'ps', '-aq'], query_timeout)
     if rc:
         return {'available': False, 'installed': True, 'error': (error or output).strip()[:800],
                 'containers': [], 'scope': scope}
     identifiers = [v.strip() for v in output.splitlines() if v.strip()]
     results = []
     if identifiers:
-        rc, raw, error = run(args + [engine, 'inspect', *identifiers], inspect_timeout)
+        rc, raw, error = run_in_scope(args + [engine, 'inspect', *identifiers], inspect_timeout)
         if rc:
             return {'available': True, 'installed': True, 'error': (error or raw).strip()[:800],
                     'containers': [], 'scope': scope}
@@ -328,7 +337,8 @@ def all_rootless_podman():
         results.append(containers('podman', prefix, scope,
                                   query_timeout=min(9, max(2, int(remaining - 2))),
                                   inspect_timeout=min(18, max(2, int(remaining - 2))),
-                                  registry_checks=False))
+                                  registry_checks=False,
+                                  working_directory='/'))
     warning = ('Rootless Podman scan time budget reached; ' + str(skipped) +
                ' context(s) were not inspected') if skipped else ''
     return results, warning

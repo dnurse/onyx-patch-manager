@@ -1,7 +1,7 @@
 """Onyx Patch Manager.
 
 All remote mutation is performed by explicitly approved controller jobs. The
-Textual application is a client and never executes patch commands directly.
+Django web interface uses the controller over a private Unix socket.
 """
 
-__version__ = "0.5.13"
+__version__ = "0.6.0"

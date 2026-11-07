@@ -2057,7 +2057,7 @@ input::placeholder {
 .account-name-role {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .account-controls {display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .account-edit-btn {white-space:nowrap}
-.account-edit-surface {max-width:720px}
+.account-edit-surface {max-width:none}
 @media (max-width:520px) {
   .account-row {align-items:flex-start}
   .account-controls {gap:7px}
@@ -2145,3 +2145,205 @@ input::placeholder {
 #account-password-fields[hidden], #account-credentials[hidden], #account-choices[hidden],
 #account-create-notice[hidden], #account-probe-notice[hidden], #replace-confirmation[hidden],
 #opm-confirm-row[hidden] {display:none!important;}
+
+
+/* v0.5.17: One Settings surface, separated content sections instead of cards. */
+.settings-master { display:block; }
+.settings-master .settings-section + .settings-section { border-top:1px solid #334a54; }
+.settings-master .settings-section > .surface-heading {
+    border-bottom:0;
+    padding:22px var(--surface-inset) 8px;
+}
+.settings-master .settings-section > .surface-heading h2 { font-size:15px; }
+.settings-master .settings-section > form.form-stack {
+    padding:14px var(--surface-inset) 22px;
+    margin:0;
+}
+.settings-master .settings-section .key-value { max-width:none; }
+.settings-master .settings-section .key-value:last-of-type { border-bottom:0; }
+.settings-master .settings-section .web-access-note { padding:12px var(--surface-inset) 22px; }
+.settings-master .settings-section > .account-list { padding:8px var(--surface-inset) 6px; }
+.settings-master .settings-section > .disclosure { margin-bottom:20px; }
+.server-display-settings-form .form-actions { padding-top:8px; }
+
+/* Allow the sort popup to extend beyond the header; other surfaces still clip. */
+.surface.server-table-surface { overflow:visible; }
+.server-table-surface .table-scroll { border-radius:0 0 13px 13px; }
+
+/* Client-side sorting and optional persisted group headings. */
+.server-sort-dropdown { position:relative; flex-shrink:0; z-index:5; }
+.server-sort-dropdown > summary {
+    list-style:none; cursor:pointer; border:1px solid #43606a; border-radius:9px;
+    color:#bce9dc; background:#203744; padding:9px 12px; font-size:12px;
+    font-weight:650; white-space:nowrap; user-select:none;
+}
+.server-sort-dropdown > summary::-webkit-details-marker { display:none; }
+.server-sort-dropdown > summary span { margin-left:5px; }
+.server-sort-dropdown[open] > summary,
+.server-sort-dropdown > summary:hover { border-color:#6bbca6; background:#285046; }
+.server-sort-dropdown > summary:focus-visible,
+.server-sort-dropdown .server-sort-options button:focus-visible { outline:2px solid #73d9b1; outline-offset:2px; }
+.server-sort-options {
+    position:absolute; top:calc(100% + 6px); right:0; min-width:190px;
+    padding:7px; background:#172b36; border:1px solid #496573;
+    box-shadow:0 12px 26px #07131bd9; border-radius:10px;
+    display:flex; flex-direction:column; gap:2px;
+}
+.server-sort-options .server-sort-caption {
+    color:#8daab5; font-size:10px; font-weight:700;
+    letter-spacing:.09em; padding:6px 9px;
+}
+.server-sort-options button {
+    width:100%; text-align:left; font:inherit; font-size:12px;
+    color:#d2e1e6; background:transparent; padding:10px 9px;
+    border:0; border-radius:6px; cursor:pointer;
+}
+.server-sort-options button:hover,
+.server-sort-options button[aria-pressed="true"] { background:#2b514b; color:#d8fff1; }
+.data-table .server-group-row td {
+    background:#223b47; color:#a3e7d0; font-weight:700;
+    font-size:11px; letter-spacing:.03em; padding:11px 20px;
+    border-top:1px solid #41645f;
+}
+.data-table .server-group-row:hover td { background:#223b47; }
+.scan-time-column { white-space:nowrap; color:#a9bdc5!important; font-size:11px!important; }
+@media (max-width:680px) {
+    .server-sort-dropdown > summary { font-size:11px; }
+    .server-sort-options { min-width:170px; }
+    .data-table tr.server-group-row { background:transparent; border:0; margin:16px 0 6px; }
+    .data-table .server-group-row td {
+        display:block; border:0; border-bottom:1px solid #41645f;
+        border-radius:0; padding:8px 10px; text-align:left;
+    }
+    .data-table .server-group-row td::before { content:none; }
+}
+
+/* v0.5.19: Incomplete enrollment is visible, distinct from ICMP reachability. */
+.status.setup-needed {display:inline-flex;color:#ffd5a1;background:#533b29;border:1px solid #a87435;font-weight:700;}
+.table-action.setup-action,.btn.setup-action {display:inline-flex;align-items:center;justify-content:center;background:#80501e;color:#fff0d7;border:1px solid #d39540;border-radius:8px;padding:9px 12px;font-weight:700;text-decoration:none;}
+.table-action.setup-action:hover,.btn.setup-action:hover,.table-action.setup-action:focus-visible,.btn.setup-action:focus-visible {background:#9b6324;border-color:#f4bc67;}
+.data-table tr.setup-incomplete td {background:#2f302b;}
+.data-table tr.setup-incomplete:hover td {background:#39372f;}
+.server-link .setup-needed {margin-top:7px;width:max-content;font-size:10px;}
+@media(max-width:680px) {
+  [data-connection-monitor] .connection-cell .connection-pill-wrap {width:auto;min-width:0;margin-left:auto;margin-right:0;align-items:flex-end;}
+  [data-connection-monitor] .connection-cell .connection-pill-wrap .status {align-self:flex-end;}
+  [data-connection-monitor] .connection-cell .ping-diagnostic {text-align:right;}
+}
+
+/* v0.5.20: unified History; read-only expandable sanitized activity diagnostics. */
+.history-heading {display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;}
+.history-filters {display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.history-filter-checkbox {display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#d5e7eb;}
+.history-filter-checkbox input {width:16px;height:16px;margin:0;accent-color:#68cba3;}
+.history-sort-label {display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#a9c2cd;}
+.history-sort-label select {width:auto;min-width:140px;padding:8px 28px 8px 10px;}
+.history-filters .btn {padding:8px 12px;min-height:34px;}
+.history-table td {vertical-align:top;}
+.history-kind {display:block;color:#a2b8c1;margin-top:5px;font-size:11px;}
+.history-detail-cell {min-width:210px;max-width:480px;}
+.history-log {max-width:100%;}
+.history-log summary {cursor:pointer;color:#b7d9e3;font-size:12px;overflow-wrap:anywhere;}
+.history-log summary:hover,.history-log summary:focus-visible {color:#8fe4cb;}
+.history-log[open] summary {color:#8fe4cb;margin-bottom:10px;}
+.history-log-content {background:#142530;border:1px solid #38515d;border-radius:8px;padding:12px;line-height:1.5;font-size:12px;overflow-wrap:anywhere;white-space:normal;}
+.history-log-content p {margin:0 0 10px;}
+.history-event {display:flex;gap:12px;border-top:1px solid #314550;padding:9px 0;white-space:pre-wrap;}
+.history-event:first-of-type {border-top:0;}
+.history-event time {flex:0 0 130px;color:#99b6c1;font-size:11px;}
+.history-event span {flex:1;min-width:0;}
+.activity-full-log {margin-top:6px;}
+@media(max-width:900px) {
+  .history-heading {align-items:stretch;}
+  .history-filters {width:100%;}
+  .history-detail-cell {max-width:none;min-width:0;}
+}
+@media(max-width:680px) {
+  .history-filters {gap:12px;}
+  .history-event {flex-direction:column;gap:3px;}
+  .history-event time {flex:auto;}
+}
+
+/* v0.5.21: patch review uses all of the desktop content area; mobile retains
+   the existing shared form-panel spacing and natural wrapping. */
+.patch-review-panel {max-width:none;width:100%;min-width:0;}
+.patch-review-panel .package-chip-row {flex-wrap:wrap;}
+
+/* OPM v0.5.22: account controls, readable security forms, protected hosts. */
+.settings-master .settings-section > .account-permission-note {
+    padding: 14px var(--surface-inset) 24px; margin: 0;
+}
+.accounts-section-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.accounts-section-heading .account-create-trigger { flex: none; }
+.account-disable-confirm[hidden] { display:none!important; }
+.account-list { padding-bottom:16px!important; }
+.account-disable-confirm { margin: 0 0 12px 0; padding:14px 16px; background:var(--panel2);
+    border:1px solid #846456; border-radius:9px; max-width:640px; }
+.account-disable-confirm input { max-width:400px; }
+.account-disable-trigger { font-size:12px; white-space:nowrap; }
+.account-edit-surface, .account-security-surface { width:100%; max-width:none; }
+.account-edit-surface > .form-stack, .account-security-surface > .form-stack {
+    max-width:680px; padding:22px var(--surface-inset);
+}
+.enroll-protected-option { display:flex; gap:12px; align-items:flex-start; padding:13px 15px;
+    background:var(--panel2); border:1px solid var(--border); border-radius:9px; cursor:pointer; }
+.enroll-protected-option input[type=checkbox] { width:18px; height:18px; flex:none; accent-color:var(--teal); margin:2px 0 0; }
+.enroll-protected-option strong, .enroll-protected-option small { display:block; }
+.enroll-protected-option small { font-size:12px; font-weight:400; color:var(--muted); margin-top:3px; }
+/* v0.5.23: protected hosts use one white padlock INSTEAD of the server glyph. */
+.machine-icon.is-protected { position:relative; color:#f5f8fb; }
+.machine-icon.is-protected::before { content:""; position:absolute; width:12px; height:12px;
+    left:9px; top:5px; border:2px solid #f5f8fb; border-bottom:0;
+    border-radius:8px 8px 0 0; box-sizing:border-box; }
+.machine-icon.is-protected::after { content:""; position:absolute; width:18px; height:13px;
+    left:6px; bottom:6px; background:#f5f8fb; border:1px solid #f5f8fb;
+    border-radius:3px; box-sizing:border-box; }
+@media(max-width:680px){
+  .accounts-section-heading .account-create-trigger { width:100%; }
+  .account-controls { justify-content:flex-start; }
+  .account-row { flex-wrap:wrap; }
+}
+
+/* v0.5.23: full-width server registration and inline protection control. */
+.enroll-shell { max-width:none; width:100%; margin:0; }
+.server-registration-panel { width:100%; max-width:none; }
+.enroll-first-actions { align-items:center; justify-content:space-between; gap:20px; }
+.enroll-shell .enroll-protected-option { margin:0 auto 0 0; padding:0; display:flex;
+    flex-direction:column; align-items:flex-start; gap:3px; background:transparent;
+    border:0; border-radius:0; cursor:pointer; }
+.enroll-shell .enroll-protected-title { display:inline-flex; align-items:center; gap:9px; }
+.enroll-shell .enroll-protected-title input[type=checkbox] { width:17px; height:17px;
+    margin:0; flex:none; }
+.enroll-shell .enroll-protected-option small { margin:0; font-weight:400; }
+@media(max-width:740px) {
+  .enroll-first-actions { align-items:stretch; }
+  .enroll-shell .enroll-protected-option { width:100%; }
+}
+
+/* v0.5.24: cards and their interior forms must use the same available width.
+   Intentional exceptions: sign-in dialog, button rows, compact filters. */
+.form-panel { max-width:none; width:100%; min-width:0; }
+.account-edit-surface > form.form-stack,
+.account-security-surface > form.form-stack,
+.settings-master .settings-section > form.form-stack,
+.scan-auth-panel > form.form-stack {
+    max-width:none; width:100%; min-width:0; box-sizing:border-box;
+}
+.account-disable-confirm { max-width:none; width:100%; box-sizing:border-box; }
+.account-disable-confirm input:not([type=checkbox]) { max-width:none; width:100%; }
+.ssh-repair-form input:not([type=checkbox]):not([type=hidden]),
+.ssh-repair-form select, .account-security-surface form.form-stack input:not([type=checkbox]):not([type=hidden]),
+.account-security-surface form.form-stack select,
+.account-edit-surface form.form-stack input:not([type=checkbox]):not([type=hidden]),
+.account-edit-surface form.form-stack select { width:100%; max-width:none; box-sizing:border-box; }
+.ssh-repair-form > button.btn { width:100%; }
+.ssh-repair-form .fingerprint-panel { max-width:none; min-width:0; overflow-wrap:anywhere; }
+.ssh-repair-create-fields { display:flex; flex-direction:column; gap:9px; min-width:0; }
+.ssh-repair-create-fields[hidden] { display:none!important; }
+.ssh-repair-create-option { display:flex; gap:10px; align-items:center; }
+.ssh-repair-create-option input { flex:none; width:18px; height:18px; }
+@media(max-width:680px) {
+  .account-edit-surface > form.form-stack,
+  .account-security-surface > form.form-stack { padding:16px var(--surface-inset); }
+  .ssh-repair-form .form-actions { flex-wrap:wrap; }
+}

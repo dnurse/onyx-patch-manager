@@ -1,3 +1,116 @@
+# OPM v0.6.0 — GitHub milestone and usability refinements
+
+- **Release policy:** Public GitHub milestones increment the middle version component (`0.6.0`, then `0.7.0`). Internal testing increments the third (`0.6.1` etc.). GM is the major release `1.0.0`. See `VERSIONING.md`.
+- **Conditional SSH repair:** Show the administrator-only Repair SSH action on previously verified `opm` hosts only when the latest relevant recorded scan or SSH test indicates key-authentication failure. Healthy hosts, ICMP failures, network outages and unrelated sudo failures do not trigger it. Later successful SSH evidence clears the action. Test SSH can be used to establish a diagnosis. Backend authorization and recovery safeguards remain intact.
+- **Settings:** Remove the duplicate top-level Change my password button. Retain Edit password under the account row and the separate password-change workflow.
+- **Dashboard:** Default to numeric IP ordering (IPv4, IPv6, then DNS hosts); provide an IP sorting option. With configured group headings, numeric order applies within groups. Sort using server-derived ordinal positions so Viewer HTML never carries raw IP data in sort attributes.
+- **GitHub documentation:** Consolidated README and release notes; add a full GitHub release description and versioning policy. Consolidated development highlights and release validation status are recorded in the [v0.6.0 GitHub release](https://github.com/dnurse/onyx-patch-manager/releases/tag/v0.6.0).
+- **Release status:** Development/pre-GM. No new Compose update or automated password-fallback path. Live SSH recovery and responsive UI still need acceptance testing.
+
+# OPM v0.5.24 — Settings repair, full-width forms, managed SSH account recovery, legacy UI cleanup
+
+- **Settings HTTP 500:** Removed orphaned Django template tags and form markup left behind during the move to dedicated Create New Account pages. Account management remains administrator-only.
+- **Full-width UI audit:** Repair SSH, account create/edit/security, scan authorization and other full-width form panels now use the available card width on desktop, while responsive/mobile and compact login controls remain appropriately sized.
+- **Repair SSH when `opm` is missing:** Added an explicit "create account if missing" option and new 12+ character password confirmation. The trusted remote setup script checks account presence. If the account exists, it only restores the controller public key and preserves its password. If missing and approved, it creates `opm` with password-required sudo and installs the key. A leftover old `/home/opm` directory blocks automatic adoption for safety. Host-key approval, separate administrator credentials, host-operation locks, and post-repair SSH/sudo tests remain mandatory. History records whether an account was created. No unattended password fallback is introduced.
+- **Retired legacy Textual UI:** Removed `src/opm/ui.py`, `opm tui` entry point, obsolete Textual tests, and the `textual` Python dependency. The actual Whiptail installer (`OPMTUI.sh`) is retained and required.
+- **Validation:** Local regression suite and source/syntax checks; the new SSH recovery path and rendered Settings page require live Debian/Django validation before GM sign-off.
+
+# OPM v0.5.23 — Account management, protected-host layout, administrator SSH repair
+
+- **Protected Dashboard icon:** Replace, do not overlay, the server icon with a single white CSS padlock for protected hosts. Preserve other Dashboard styling.
+- **Account management:** Move Accounts above Security in Settings. The **Create New Account** action opens a dedicated administrator-only creation page. Account role selection, password validation, audit events, and existing administrative restrictions remain in place.
+- **Server registration:** Expand the three-step wizard to the available content width, with a compact inline **Protect server** control immediately to the left of Step 1's Next action. New registrations start unchecked; completing previously saved setup retains its stored selection. The legacy edit form is also full-width.
+- **Manual SSH key recovery:** Administrator-only **Repair SSH access** on a previously verified `opm` host. Require a separate administrator SSH account, valid credentials, explicit ED25519 fingerprint approval and backend verification against the trusted SSH identity before using those credentials. The remote action appends only the current controller's public key and preserves the existing `opm` account/password/other authorized keys. It never automatically falls back to password SSH during normal scans. Missing `authorized_keys` can be securely created; mismatched ownership, symlinks, changed SSH host keys and active patch locks are rejected.
+- **Separate sudo verification:** Optionally test the existing opm sudo password after recovering key login. Recovery is **Partial** if SSH works but sudo remains unverified (for example, when a manually recreated `opm` account lacks sudo membership). No sudo group membership or policy is silently changed. The administrator must inspect/repair sudo separately before patching.
+- **History and security:** Record sanitized recovery events, approved/failed/partial outcomes, and non-secret `ssh_recovered`/`sudo_verified` results. Do not persist login or sudo passwords in SQLite, History, browser sessions, URL parameters, command arguments or logs. The operation is serialized with existing host activities and denied while a patch job holds the host.
+- **Validation:** Local unit, integration-style mock, Python/Bash/JavaScript syntax, and archive checks; live remote SSH repair and rendered responsive pages require field testing before GM.
+
+# OPM v0.5.22 — GM security/UI and scan diagnostics
+
+- **Account management:** Account list and permissions note use consistent padding. Disable is a button with a separate inline confirmation form; the Create another account button moves to the right of Accounts heading. Account Management and Account Security sections are full-width, with readable form widths.
+- **Viewer privacy:** Viewers cannot enter Settings (HTTP 403) or see the Settings navigation link. Literal network IP addresses are removed from Viewer dashboard, server inventory, server profile, History, job details, and background activity API responses. User password-change self-service remains available; it does not expose settings or infrastructure configuration.
+- **Protected servers:** The Add Server wizard again shows the Protected server checkbox, unchecked for new hosts and retaining saved protection on resumed onboarding. The Dashboard uses a CSS-only lock on protected host icons. Existing host protection is unchanged.
+- **Scan all diagnostics:** The persisted activity timeline now logs each failed server by name with a bounded, sanitized error and lists failed server names in the final summary. Successful scans are named in the log too. Older records are unchanged.
+- **GM evidence:** Field tests reported successful role checks and Dry Run. Fresh Debian 13 installation, local complete uninstall, multi-host OS patching and remote OPM-account replacement were previously field-tested. The v0.5.22 UI/privacy/audit fixes require new live verification.
+
+# OPM v0.5.21 — Patch review, enrollment audit clarity and native installer status
+
+- Removed the redundant **Authorize sudo** actions from Patch Manager and the scan form; patch review continues to request a sudo password only if the current session has no valid cached authorization. Existing scan and patch endpoints remain unchanged.
+- The Review patch plan surface fills the available desktop content width; narrow screens retain the mobile layout.
+- A confirmed **Delete and recreate** of an existing remote `opm` account now writes an explicit, sanitized step to the enrollment event log before final SSH/sudo verification. Successful enrollment summaries identify replacement; failed verification still shows the account operation in History.
+- Installer progress retains all 15 stages, checked completed steps, emphasized arrow/uppercase active stage, empty-square pending steps, and a green progress bar. Whiptail/newt does not guarantee independent per-row colour or bold styling.
+- **Live GM testing:** Local complete uninstall and remote legacy-account replacement were confirmed by the user. These UI/audit changes and the remaining major release-validation scenarios still require deployment testing.
+
+# OPM v0.5.20 — Enrollment recovery, unified History and maintenance polish
+
+- Dashboard: show amber `Setup required` exclusively in the **Last scan** column for unverified servers. Server name and row background remain unchanged. The Servers page still identifies incomplete setup with an amber Finish setup action.
+- Remote legacy-`opm` replacement: verify the passwd entry **after** `userdel -r` rather than conflating its exit status with account removal. Handle a nonfatal missing mail-spool warning when the account was actually removed, while refusing to force-delete accounts that remain busy. If the old account is gone but `/home/opm` remains, stop with a specific recovery diagnostic rather than silently inheriting old keys/files. A separate administrator SSH login and explicit destructive approval remain mandatory.
+- History: rename the former Patch history page to **History**. Merge OS patch jobs, scans, onboarding, SSH tests, web-access operations and (for administrators) security audit entries. Show Patches and Activity checkboxes, newest/oldest sorting, expandable sanitized diagnostic messages and persistent step-by-step background activity events. Patch job details still show their Ansible event logs; no raw SSH stdout, passwords, private keys or submitted secrets are persisted. Existing historical rows retain their original details; records truncated by previous versions cannot be recovered. The new `activity_events` table is created automatically with the existing controller database initialization.
+- Complete uninstall: exit the interactive maintenance utility on successful uninstall, but stay in the menu after cancellation or failure. Suppress the missing-mail-spool message after confirmed local account deletion; genuine failures remain visible.
+- **GM checklist:** The user reported complete local uninstall and deletion of the `opm` account as successful in live testing. Treat that specific test as field-tested. Remote account replacement and v0.5.20 Web UI behavior are *not* field-tested yet.
+
+**Validation:** Automated regression and simulated deletion/warning tests only. A new scan/provisioning attempt against the affected legacy server and a browser check of History remain required.
+
+---
+
+# OPM v0.5.19 — Enrollment recovery, sudo-only authorization, mobile alignment
+
+- Confirmed destructive account replacement first disables linger and terminates only old `opm` logind user sessions before normal `userdel -r`; does not use forced deletion. Remaining processes still block replacement and require manual investigation.
+- Failed enrollment remains registered as unverified for safe recovery, now marked with amber **Setup incomplete** status and **Finish setup** action on Dashboard, Servers and host profile. ICMP `Up` is independent of enrollment.
+- Fixes right-alignment of the Dashboard Connection badge in mobile card layout.
+- Adds **Authorize sudo only** option, validating sudo over SSH without APT refresh or scanning, caching validated credentials for at most 10 minutes in controller RAM scoped to the login session. Normal Patch Review accepts direct credentials too.
+- Live integration tests with actual remote account processes remain required before GM sign-off.
+
+# OPM v0.5.18: Complete uninstall recovery and visible progress checklist
+
+- Fixed a destructive complete-uninstall bug: the old `userdel -r opm || rm -rf /home/opm` fallback could remove the home directory while leaving the local account registered. The new flow stops OPM units, disables lingering, terminates the dedicated systemd user session, and verifies account deletion before clearing any surviving home. Failure is explicitly reported, with the home preserved for inspection.
+- A complete uninstall can now finish cleaning up a previous partial purge even when application files are already absent. Root-owned OPM maintenance helper files are also removed on successful complete uninstall; remote managed-server accounts are never touched.
+- Fresh installation now repairs the specific older partial-uninstall state (existing `opm` account, missing `/home/opm`) by reconstructing its private service home. It refuses symlink or unexpected home-directory paths rather than modifying arbitrary directories.
+- Fixed the Whiptail progress dialog's actual visible height. Newt sizes the text area from the *initial* message; starting with two lines made the later 15-step checklist invisible despite full updates being sent. The gauge is now opened with all steps present, and later updates preserve the same list with ✓ completed, ▶ active (uppercase), and □ upcoming markers.
+- No changes to remote hosts, container scanning, patch execution, account migration, database schema, or Web UI. The unit/integration tests use mocks and do not perform destructive system operations. Live Debian 13 validation is still required.
+
+# OPM v0.5.17: Server sorting, group organization, and Settings layout
+
+- Dashboard separates scan status from **Scan time** into adjacent columns. Scan time is displayed in the configured OPM timezone, without stacking under the status badge.
+- Dashboard's existing **View all servers** link becomes a sort dropdown that reorders the current table without navigation. Name ascending/descending, group ascending, update count descending, and latest scan are supported.
+- The Servers inventory view receives the same sort options under **Sort servers**.
+- Settings gains the administrator-only **Group servers in Dashboard and Servers tables** preference. The setting persists in the existing private web configuration, preserving inventory and all other preferences. Enabling it shows group headings from saved `group_name` values (or Ungrouped) and sorts within groups; disabling it sorts the complete list.
+- The Settings page is consolidated into one large card with section dividers for Security, Regional preferences, Server organization, Web access, Testing & Validation, and Accounts.
+- The sort controller uses plain DOM APIs and textContent for user-supplied group labels; no network requests, inventory mutation, or patch-order changes.
+- No database or remote agent changes.
+
+## GM validation
+
+Automated tests and syntax checks are required before release. Browser layout/interaction and live installation on Debian 13 need field verification.
+
+---
+
+# OPM v0.5.16: Persistent installation progress checklist
+
+- The native Whiptail progress dialog now displays **all 15 installer stages** from the beginning of the operation, not just the four most recently completed stages.
+- Completed stages display `[x]`, the active stage is highlighted with `[>]` and uppercase text, and upcoming stages display `[ ]`. The progress bar and completion percentage remain at the bottom.
+- Progress is reconstructed from the installation's completed-stage counter after the dialog reopens (for example, following an administrator setup prompt); the earlier checkmarks are retained.
+- The progress window is taller on standard SSH terminals. Shorter terminals use a compact two-column checklist instead of silently removing completed steps. Terminal-native Whiptail does not support arbitrary per-row colours; emphasis is provided by the active marker and uppercase label.
+- Stage display order and names come from a single manifest in `OPMInstall.sh`, checked against actual `start_step` calls in regression tests.
+- The change affects only installer presentation. No patch execution, controller code, SSH keys, account handling, databases, or system service behavior changes.
+- Automated tests cover all stages, active/completed/future status, shorter terminal rendering, and gauge reopens. Live SSH/Whiptail visual acceptance testing remains pending.
+
+# OPM v0.5.15: Container card visibility and honest empty states
+
+- In Server Details -> Container workloads and Patch Manager -> expanded host information, omit Docker/Podman sections only when the scan confirms they are not installed.
+- Keep installed but unavailable engines, access errors, partial privileged/rootless scope warnings and their diagnostics visible. An unprivileged absence result with a privileged discovery error is *not* treated as a clean absence.
+- When both engines are confirmed absent, show **Neither Docker nor Podman is installed.** When no scan results exist, show **No container scan results yet.** Incomplete inventory does not claim either engine is absent.
+- Accept older ENOENT-based absence data as well as newer `installed: false` scan data.
+- Presentation-only release: no change to remote discovery, SSH, sudo, database, accounts, or patching.
+- Automated tests cover mixed and absent engines, legacy results, error visibility and both templates. Live Debian/Django browser verification remains a GM test.
+
+# OPM v0.5.14: Rootless Podman scan working-directory repair
+
+- Fixes authenticated rootless Podman discovery for service users such as `uosserver` when the OPM SSH user's home (`/home/opm`) has restrictive permissions. Although the scanner already switched Linux UID and set `HOME`, it inherited `/home/opm` as its process working directory, resulting in `cannot chdir to /home/opm: Permission denied` and `Error: setting up the process`.
+- Runs the read-only `podman ps -aq` and `podman inspect` subprocesses with an explicit working directory of `/` **before** the user switch. Preserves the discovered account's real `HOME`, `USER`, `LOGNAME`, `XDG_RUNTIME_DIR`, and bus environment. No chmod, chown, persistent service-account change, Podman write, or privileged LXC change is required.
+- Adds targeted regression coverage proving both rootless Podman subprocesses receive the safe cwd and the launched command remains read-only. Does not change container update status or implement container upgrades.
+- A real sudo-authorized rescan on a multi-user Podman target is still required for field validation.
+
 # OPM v0.5.13: Existing-account choice clarity and radio-control sizing
 
 - In the Add Server wizard, when a remote `opm` account already exists, the choice now appears as a numbered list of **Reuse existing opm account** and **Delete and recreate the opm account (Destructive)**.

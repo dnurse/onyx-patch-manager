@@ -102,7 +102,7 @@ def test_installer_menu_and_persistent_command():
     assert 'no_active_jobs' in script
     assert 'PRAGMA quick_check' in script
     assert 'confirm' in script
-    assert "rm -rf -- \"$APP_HOME/.local/share/opm\"" in script
+    assert 'rm -rf -- "$APP_HOME"' in script
     for file in ('OPMMaintenance.sh', 'OPMInstall.sh', 'OPMInstaller.sh'):
         check = subprocess.run(['bash','-n', str(PROJECT/file)], capture_output=True, text=True)
         assert check.returncode == 0, check.stderr

@@ -1,7 +1,7 @@
 """Detached, systemd-supervised Ansible patch worker.
 
 Each worker operates on one approved, immutable OS patch plan and writes state
-and events to SQLite. Killing the TUI does not affect this process. Jobs are
+and events to SQLite. Closing the web browser does not affect this process. Jobs are
 not automatically replayed after an interruption, because APT is not atomic.
 
 V0.1 intentionally does not execute container updates. Docker and Podman are
@@ -360,8 +360,8 @@ def run_job(job_id: str, config: Config | None = None) -> None:
     # an explicit envvar so child playbook processes find the same executable.
     os.environ["PATH"] = runner_path
 
-    # Claim ephemeral passwords once, before executing the first host. A TUI
-    # disconnect doesn't affect this worker. If the controller restarted
+    # Claim ephemeral passwords once, before executing the first host. A browser
+    # disconnect does not affect this worker. If the controller restarted
     # before the claim, do not assume authorization or retry the job.
     needed = [target["host_id"] for target in plan["snapshot"]["targets"]
               if target.get("sudo_mode") == "password"]

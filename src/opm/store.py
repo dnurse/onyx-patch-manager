@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS activities (
  acknowledged INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS activities_recent ON activities(created DESC);
+-- Durable operator-facing diagnostics. Entries contain only curated,
+-- sanitized messages, never SSH command output or submitted passwords.
+CREATE TABLE IF NOT EXISTS activity_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ activity_id TEXT NOT NULL, timestamp REAL NOT NULL,
+ message TEXT NOT NULL,
+ FOREIGN KEY(activity_id) REFERENCES activities(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS activity_events_by_activity ON activity_events(activity_id,id);
 -- Per-host activity locks avoid concurrent scans, SSH tests or enrollment
 -- on the same target. These are separate from modifying patch-job locks.
 CREATE TABLE IF NOT EXISTS activity_targets (
@@ -255,7 +264,7 @@ class Store:
         """
         if not target_keys or len(set(target_keys)) != len(target_keys):
             raise ValueError("No unique operation targets were provided")
-        if kind not in {"scan", "ssh_test", "enrollment", "web_access"}:
+        if kind not in {"scan", "ssh_test", "enrollment", "ssh_repair", "web_access"}:
             raise ValueError("Unsupported background activity")
         activity_id = new_id()
         with self.connection() as db:
@@ -269,6 +278,8 @@ class Store:
             db.execute("INSERT INTO activities (id,kind,label,state,detail,total,created,updated) "
                        "VALUES(?,?,?,'queued','Waiting for controller',?,?,?)",
                        (activity_id, kind, label[:128], total, now(), now()))
+            db.execute("INSERT INTO activity_events(activity_id,timestamp,message) VALUES(?,?,?)",
+                       (activity_id, now(), 'Queued: ' + kind))
             for key in target_keys:
                 db.execute("INSERT INTO activity_targets(target_key,activity_id) VALUES(?,?)",
                            (key, activity_id))
@@ -281,13 +292,31 @@ class Store:
             raise ValueError("Unknown activity")
         item = dict(row)
         item['result'] = json.loads(item.pop('result_json'))
+        with self.connection() as db:
+            entries = db.execute("SELECT timestamp,message FROM activity_events "
+                                 "WHERE activity_id=? ORDER BY id",
+                                 (activity_id,)).fetchall()
+        item['events'] = [dict(entry) for entry in entries]
         return item
 
-    def recent_activities(self, limit: int = 30) -> list[dict]:
+    def recent_activities(self, limit: int = 30, *, include_events: bool = False) -> list[dict]:
         with self.connection() as db:
             rows = db.execute("SELECT * FROM activities ORDER BY created DESC LIMIT ?",
-                              (min(max(limit, 1), 100),)).fetchall()
-        return [{**dict(row), 'result': json.loads(row['result_json'])} for row in rows]
+                              (min(max(limit, 1), 250),)).fetchall()
+            events = {}
+            if include_events and rows:
+                ids = [row['id'] for row in rows]
+                placeholders = ','.join('?' for _ in ids)
+                for entry in db.execute(f"SELECT activity_id,timestamp,message FROM activity_events "
+                                        f"WHERE activity_id IN ({placeholders}) ORDER BY id", ids):
+                    entries = events.setdefault(entry['activity_id'], [])
+                    if len(entries) < 250:
+                        entries.append({'timestamp':entry['timestamp'], 'message':entry['message']})
+        result = [{**dict(row), 'result': json.loads(row['result_json'])} for row in rows]
+        if include_events:
+            for item in result:
+                item['events'] = events.get(item['id'], [])
+        return result
 
     def activity_progress(self, activity_id: str, detail: str, *, completed: int | None = None,
                           failed: int | None = None) -> None:
@@ -303,7 +332,11 @@ class Store:
             values.append(failed)
         values.append(activity_id)
         with self.connection() as db:
-            db.execute(f"UPDATE activities SET {','.join(updates)} WHERE id=? AND state IN ('queued','running')", values)
+            updated = db.execute(f"UPDATE activities SET {','.join(updates)} "
+                                 "WHERE id=? AND state IN ('queued','running')", values).rowcount
+            if updated:
+                db.execute("INSERT INTO activity_events(activity_id,timestamp,message) VALUES(?,?,?)",
+                           (activity_id, now(), sanitize(detail, 1200)))
 
     def activity_finish(self, activity_id: str, state: str, detail: str,
                         result: dict | None = None) -> None:
@@ -315,11 +348,14 @@ class Store:
         # output, submitted passwords, SSH keys or form request bodies.
         result = result or {}
         safe_result = {k: v for k, v in result.items()
-                       if k in {'host_id', 'verified', 'scheduled'}}
+                       if k in {'host_id', 'verified', 'scheduled', 'ssh_recovered', 'sudo_verified', 'account_created'}}
         with self.connection() as db:
-            db.execute("UPDATE activities SET state=?,detail=?,result_json=?,updated=?,finished=? "
+            finished = db.execute("UPDATE activities SET state=?,detail=?,result_json=?,updated=?,finished=? "
                        "WHERE id=? AND state IN ('queued','running')",
-                       (state, sanitize(detail, 240), json.dumps(safe_result), now(), now(), activity_id))
+                       (state, sanitize(detail, 240), json.dumps(safe_result), now(), now(), activity_id)).rowcount
+            if finished:
+                db.execute("INSERT INTO activity_events(activity_id,timestamp,message) VALUES(?,?,?)",
+                           (activity_id, now(), state.title() + ': ' + sanitize(detail, 3000)))
             db.execute("DELETE FROM activity_targets WHERE activity_id=?", (activity_id,))
 
     def reconcile_activities(self) -> None:
@@ -330,9 +366,14 @@ class Store:
         queued before the restart.
         """
         with self.connection() as db:
+            interrupted = [row['id'] for row in db.execute(
+                "SELECT id FROM activities WHERE state IN ('queued','running')")]
             db.execute("UPDATE activities SET state='interrupted', "
                        "detail='Controller restarted. Check remote state before retrying', "
                        "updated=?,finished=? WHERE state IN ('queued','running')", (now(), now()))
+            for activity_id in interrupted:
+                db.execute("INSERT INTO activity_events(activity_id,timestamp,message) VALUES(?,?,?)",
+                           (activity_id, now(), 'Interrupted: controller restarted; inspect the remote state before retrying'))
             db.execute("DELETE FROM activity_targets")
             # A controller restart can interrupt a scan after begin_scan but
             # before finish_scan. Resolve those rows too, otherwise the UI

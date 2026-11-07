@@ -18,21 +18,26 @@ from zoneinfo import available_timezones
 from django import forms
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
+from django.contrib.auth.views import PasswordChangeView
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.http import Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from django.views.decorators.cache import never_cache
 
 from opm.controller import rpc
 from opm.validation import sanitize, validate_host
+from .redaction import redact_for_viewer
+from .ssh_status import needs_ssh_repair
 from .models import AuditEvent, LoginFailure
 from .timeprefs import (get_configured_timezone, update_configured_timezone,
-                        get_validation_preferences, update_validation_preferences)
+                        get_validation_preferences, update_validation_preferences,
+                        get_server_display_preferences, update_server_display_preferences)
 
 
 class HostForm(forms.Form):
@@ -46,7 +51,48 @@ class HostForm(forms.Form):
                                                 ('passwordless', 'Already has passwordless sudo'),
                                                 ('read_only', 'Read-only host'), ('root', 'Direct root account')],
                                   initial='password', label='Sudo policy')
-    protected = forms.BooleanField(required=False, label='Protected server, extra patch approval')
+    protected = forms.BooleanField(required=False, initial=False, label='Protected server, extra patch approval')
+
+
+class SSHRepairForm(forms.Form):
+    """Explicit manual recovery of the managed opm SSH key on a verified host.
+
+    SSH host identity is reviewed before administrator credentials are sent.
+    Secrets are used for one authenticated controller request and never stored.
+    """
+    admin_user = forms.CharField(max_length=32, label='Existing administrator SSH username')
+    login_password = forms.CharField(max_length=1024,
+        widget=forms.PasswordInput(render_value=False), label='Administrator SSH password')
+    admin_sudo_password = forms.CharField(max_length=1024, required=False,
+        widget=forms.PasswordInput(render_value=False),
+        label='Administrator sudo password (if different)')
+    opm_password = forms.CharField(required=False, max_length=1024,
+        widget=forms.PasswordInput(render_value=False),
+        label='Current opm sudo password (optional verification)')
+    create_if_missing = forms.BooleanField(required=False, initial=False,
+        label='Create a new opm account if it no longer exists')
+    new_opm_password = forms.CharField(required=False, max_length=1024,
+        widget=forms.PasswordInput(render_value=False), label='New opm sudo password')
+    new_opm_password_confirm = forms.CharField(required=False, max_length=1024,
+        widget=forms.PasswordInput(render_value=False), label='Confirm new opm password')
+
+    def clean(self):
+        data = super().clean()
+        if data.get('create_if_missing'):
+            password = data.get('new_opm_password') or ''
+            if len(password) < 12:
+                self.add_error('new_opm_password', 'Use at least 12 characters for a new account')
+            if password != data.get('new_opm_password_confirm'):
+                self.add_error('new_opm_password_confirm', 'Passwords must match')
+        return data
+    fingerprint = forms.CharField(max_length=120, widget=forms.HiddenInput)
+    trust_ack = forms.BooleanField(label='I verified and approve this SSH host fingerprint')
+
+    def clean_fingerprint(self):
+        value = self.cleaned_data['fingerprint']
+        if not value.startswith('SHA256:'):
+            raise forms.ValidationError('Check and approve the displayed fingerprint before continuing')
+        return value
 
 
 class BootstrapForm(forms.Form):
@@ -70,7 +116,7 @@ class EnrollmentForm(forms.Form):
     address = forms.CharField(max_length=253, label='IP address or hostname')
     ssh_port = forms.IntegerField(min_value=1, max_value=65535, initial=22)
     group_name = forms.CharField(max_length=64, initial='Linux VMs')
-    protected = forms.BooleanField(required=False)
+    protected = forms.BooleanField(required=False, initial=False)
     admin_user = forms.CharField(max_length=32, label='Temporary administrator SSH username')
     login_password = forms.CharField(widget=forms.PasswordInput(render_value=False),
                                      label='Temporary administrator SSH password')
@@ -278,6 +324,16 @@ def _identity_hash(kind, value):
     return hashlib.sha256((settings.SECRET_KEY + ':' + kind + ':' + value).encode()).hexdigest()
 
 
+class OPMPasswordChangeView(PasswordChangeView):
+    """Self-service password changes remain available to Viewers.
+
+    Viewers cannot open Settings, so a successful change or cancellation
+    returns them to Dashboard instead of a newly forbidden Settings page.
+    """
+    def get_success_url(self):
+        return reverse('settings' if self.request.user.is_staff else 'dashboard')
+
+
 @require_http_methods(['GET', 'POST'])
 def login_view(request):
     """Persistent login throttling for private installations.
@@ -300,6 +356,7 @@ def login_view(request):
         user = None if too_many else authenticate(request, username=username, password=password)
         if user is not None and user.is_active:
             login(request, user)
+            _actor_action(request, 'sessions.login')
             return redirect('dashboard')
         # Store no submitted password or raw identifier. Cleanup also limits
         # table growth on systems that are online for months or years.
@@ -315,6 +372,7 @@ def login_view(request):
 @login_required
 @require_POST
 def logout_view(request):
+    _actor_action(request, 'sessions.logout')
     logout(request)
     return redirect('login')
 
@@ -333,6 +391,32 @@ def _state():
     return hosts
 
 
+def _dashboard_ip_order(host: dict):
+    """Sort IPv4/IPv6 numerically; place DNS names after IP literals.
+
+    This runs on the controller dataset *before* Viewer redaction. Client
+    sorting uses a non-secret ordinal rather than embedding raw IP addresses
+    into page attributes visible to Viewers.
+    """
+    address = str(host.get('address') or '')
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return (2, address.casefold(), str(host.get('name') or '').casefold())
+    return (0 if parsed.version == 4 else 1, int(parsed), str(host.get('name') or '').casefold())
+
+
+def _public_for(request, data):
+    """Restrict literal network addresses from read-only Viewer responses.
+
+    Keep the full controller dataset for authenticated Operators/Admins; do
+    not expose IPs in HTML, background activity JSON, or diagnostic logs.
+    """
+    if not request.user.is_staff:
+        return redact_for_viewer(data)
+    return data
+
+
 @login_required
 def dashboard(request):
     try:
@@ -343,6 +427,10 @@ def dashboard(request):
     except (ValueError, OSError, RuntimeError) as exc:
         hosts, jobs, activities, controller = [], [], [], {'status': 'offline'}
         messages.error(request, 'Controller unavailable: ' + sanitize(str(exc), 240))
+    hosts = sorted(hosts, key=_dashboard_ip_order)
+    hosts = _public_for(request, hosts)
+    activities = _public_for(request, activities)
+    jobs = _public_for(request, jobs)
     successful = sum(bool(h['scan'] and h['scan']['state'] == 'completed') for h in hosts)
     failed = sum(bool(h['scan'] and h['scan']['state'] == 'failed') for h in hosts)
     active = sum(a['state'] in ('queued', 'running') for a in activities)
@@ -352,7 +440,7 @@ def dashboard(request):
         'refresh': False,
         'jobs': jobs[:5], 'activities': activities[:6], 'controller': controller, 'host_count': len(hosts),
         'scan_ok': successful, 'scan_failed': failed, 'updates': sum(h['updates'] for h in hosts),
-        'active_jobs': active})
+        'active_jobs': active, 'server_display': get_server_display_preferences()})
 
 
 @login_required
@@ -377,7 +465,7 @@ def dashboard_connectivity(request):
     SSH credentials are needed for this read-only ICMP check.
     """
     try:
-        results = _call('hosts.reachability')
+        results = _public_for(request, _call('hosts.reachability'))
         return JsonResponse({'hosts': results, 'interval_seconds': 120})
     except (ValueError, OSError, RuntimeError) as exc:
         return JsonResponse({'error': 'Connectivity check unavailable',
@@ -391,7 +479,9 @@ def servers(request):
     except (ValueError, OSError) as exc:
         hosts = []
         messages.error(request, sanitize(str(exc), 260))
-    return render(request, 'web/servers.html', {'page': 'servers', 'hosts': hosts})
+    hosts = _public_for(request, hosts)
+    return render(request, 'web/servers.html', {'page': 'servers', 'hosts': hosts,
+        'server_display': get_server_display_preferences()})
 
 
 @login_required
@@ -480,6 +570,42 @@ def enrollment_fingerprint(request):
 
 @login_required
 @require_http_methods(['GET', 'POST'])
+def server_repair_ssh(request, host_id):
+    """Explicit recovery only, never automatic password fallback during scans."""
+    _admin(request)
+    try:
+        host = next(h for h in _call('hosts.list') if h['id'] == host_id)
+    except StopIteration:
+        raise Http404('Unknown server')
+    if not host['verified'] or host['ssh_user'] != 'opm':
+        raise PermissionDenied('Only verified OPM-managed SSH accounts support key recovery')
+    form = SSHRepairForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        values = form.cleaned_data
+        try:
+            result = _call('hosts.ssh_repair.start', id=host_id,
+                admin_user=values['admin_user'], login_password=values['login_password'],
+                admin_sudo_password=values['admin_sudo_password'],
+                opm_password=values['opm_password'], fingerprint=values['fingerprint'],
+                trust_ack=values['trust_ack'],
+                create_if_missing=values['create_if_missing'],
+                new_opm_password=values['new_opm_password'])
+            _actor_action(request, 'hosts.ssh_repair.start', host_id)
+            messages.info(request, 'SSH recovery started. Review the result in History.')
+            return redirect('activity_detail', activity_id=result['activity_id'])
+        except (ValueError, RuntimeError, OSError) as exc:
+            error = str(exc)
+            for secret in (values['login_password'], values['admin_sudo_password'],
+                           values['opm_password'], values['new_opm_password']):
+                if secret:
+                    error = error.replace(secret, '[REDACTED]')
+            form.add_error(None, sanitize(error, 280))
+    return render(request, 'web/repair_ssh.html', {
+        'page':'servers', 'form':form, 'host':host})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
 def server_edit(request, host_id):
     """Edit stored connection settings without touching the remote server.
 
@@ -512,7 +638,20 @@ def server_detail(request, host_id):
     except (ValueError, OSError) as exc:
         messages.error(request, sanitize(str(exc), 260))
         return redirect('servers')
-    return render(request, 'web/host_detail.html', {'page':'servers', 'host':host})
+    # Repair SSH is a recovery action, not a permanent navigation shortcut.
+    # Do not confuse ICMP failure or an arbitrary sudo error with a broken key.
+    # Test SSH remains available to establish a diagnosis when necessary.
+    repair_needed = False
+    if request.user.is_superuser and host.get('verified') and host.get('ssh_user') == 'opm':
+        try:
+            recent = _call('activities.list')
+        except (ValueError, OSError, RuntimeError):
+            recent = []
+        repair_needed = needs_ssh_repair(host, recent)
+    return render(request, 'web/host_detail.html', {
+        'page': 'servers', 'host': _public_for(request, host),
+        'ssh_repair_needed': repair_needed,
+    })
 
 
 @login_required
@@ -612,6 +751,7 @@ def patch_manager(request):
         h['dry_run_eligible'] = common
         h['live_eligible'] = common and h['updates'] > 0
     detected_engines = sum(bool(e.get('available')) for h in hosts for e in h['engines'].values())
+    hosts = _public_for(request, hosts)
     return render(request, 'web/patch.html', {'page':'patch', 'hosts':hosts,
         'validation_preferences': get_validation_preferences(),
         'refresh': any(h['scan'] and h['scan']['state']=='running' for h in hosts),
@@ -678,6 +818,12 @@ def scan_all(request):
                     if len(password) > 2048 or any(ch in password for ch in '\r\n\x00'):
                         raise ValueError('Invalid sudo credential')
                     passwords[host['id']] = password
+        if request.POST.get('action') == 'authorize':
+            result = _call('credentials.authorize', sudo_passwords=passwords,
+                           credential_scope=_credential_scope(request))
+            _actor_action(request, 'credentials.authorize', host_id or 'verified servers')
+            messages.success(request, f"Sudo authorized for {result['authorized']} server(s) for 10 minutes. No scan was performed.")
+            return redirect('server_detail', host_id=host_id) if host_id else redirect('patch_manager')
         result = _call('scans.start', **({'id': host_id} if host_id else {}),
                        sudo_passwords=passwords, credential_scope=_credential_scope(request))
         _actor_action(request, 'scans.start', host_id or 'all')
@@ -778,7 +924,7 @@ def activity_feed(request):
     this endpoint. The browser can navigate freely while this is polled.
     """
     try:
-        items = _call('activities.list')
+        items = _public_for(request, _call('activities.list'))
         return JsonResponse({'activities': items}, json_dumps_params={'ensure_ascii': True})
     except (ValueError, OSError, RuntimeError) as exc:
         return JsonResponse({'error': 'Activity status temporarily unavailable',
@@ -797,17 +943,48 @@ def activity_detail(request, activity_id):
         item = _call('activities.get', id=activity_id)
     except (ValueError, OSError, RuntimeError):
         raise Http404('Activity not found')
-    return render(request, 'web/activity_detail.html', {'page':'history', 'item': item})
+    return render(request, 'web/activity_detail.html', {'page':'history', 'item': _public_for(request, item)})
 
 
 @login_required
 def history(request):
+    """Unified chronological operations and patch history.
+
+    The activity timeline holds deliberately sanitized controller messages.
+    Security audit actions are included for administrators only. No supplied
+    passwords, remote raw stdout/stderr, or SSH key materials are rendered.
+    """
+    filtering = 'filter' in request.GET
+    show_patches = not filtering or 'patches' in request.GET
+    show_activities = not filtering or 'activities' in request.GET
+    sort_order = 'oldest' if request.GET.get('sort') == 'oldest' else 'newest'
+    items = []
     try:
-        jobs = _call('jobs.list')
-    except (ValueError, OSError) as exc:
-        jobs = []
-        messages.error(request, sanitize(str(exc), 260))
-    return render(request, 'web/history.html', {'page':'history','jobs':jobs})
+        if show_patches:
+            for job in _call('jobs.list'):
+                items.append({**job, 'type':'patch',
+                    'label':'OS dry run' if job.get('mode') == 'dry_run' else 'OS patch job',
+                    'detail':job.get('error') or '', 'events':[]})
+        if show_activities:
+            for activity in _call('activities.history'):
+                items.append({**activity, 'type':'activity'})
+    except (ValueError, OSError, RuntimeError) as exc:
+        messages.error(request, 'History unavailable: ' + sanitize(str(exc), 220))
+    if show_activities and request.user.is_superuser:
+        try:
+            for audit in AuditEvent.objects.select_related('actor').order_by('-created')[:250]:
+                items.append({'id':str(audit.pk), 'type':'audit', 'kind':'audit',
+                    'label':audit.action.replace('.', ' ').replace('_',' ').title(),
+                    'state':'recorded', 'created':audit.created.timestamp(),
+                    'detail':audit.subject, 'actor':audit.actor.username if audit.actor else 'Deleted account',
+                    'events':[]})
+        except Exception:
+            messages.warning(request, 'Web audit history could not be loaded')
+    items.sort(key=lambda item: (item.get('created') or 0, item['type'], item['id']),
+               reverse=sort_order=='newest')
+    items = _public_for(request, items)
+    return render(request, 'web/history.html', {'page':'history', 'items':items,
+        'show_patches':show_patches, 'show_activities':show_activities, 'sort_order':sort_order})
 
 
 @login_required
@@ -871,7 +1048,7 @@ def job_detail(request, job_id):
     for index, event in enumerate(events):
         if event.get('level') == 'error':
             event['context_events'] = events[max(0, index - 6):index]
-    return render(request, 'web/job_detail.html', {'page':'history','job':job,
+    return render(request, 'web/job_detail.html', {'page':'history','job':_public_for(request, job),
         'refresh':job['state'] in ('queued','running')})
 
 
@@ -889,6 +1066,7 @@ def cancel_job(request, job_id):
 @login_required
 @require_http_methods(['GET', 'POST'])
 def settings_view(request):
+    _operator(request)  # Viewers cannot access Settings, even by direct URL.
     accounts = []
     form = AccountForm()
     timezone_form = TimezoneForm(initial={'timezone_name': get_configured_timezone()})
@@ -936,6 +1114,15 @@ def settings_view(request):
             _actor_action(request, 'settings.validation', 'dry-run defaults')
             messages.success(request, 'Testing and validation preferences saved')
             return redirect('settings')
+        elif request.POST.get('action') == 'update_server_display':
+            if not request.user.is_superuser:
+                raise PermissionDenied('Only the administrator can change server display settings')
+            grouped = request.POST.get('group_servers') == 'yes'
+            update_server_display_preferences(grouped)
+            _actor_action(request, 'settings.server_display',
+                          'group headings enabled' if grouped else 'group headings disabled')
+            messages.success(request, 'Server organization preferences saved')
+            return redirect('settings')
         elif request.POST.get('action') == 'create_account':
             if not request.user.is_superuser:
                 raise PermissionDenied('Only the administrator can add accounts')
@@ -958,11 +1145,31 @@ def settings_view(request):
         'page':'settings', 'accounts':accounts, 'form':form,
         'timezone_form': timezone_form, 'current_timezone': get_configured_timezone(),
         'validation_preferences': get_validation_preferences(),
+        'server_display': get_server_display_preferences(),
         'web_access_mode': getattr(settings, 'OPM_WEB_ACCESS_MODE', 'legacy'),
         'web_access_hostname': (settings.ALLOWED_HOSTS[0] if settings.ALLOWED_HOSTS else 'Not configured'),
         'web_access_proxy': getattr(settings, 'OPM_WEB_TRUSTED_PROXY_IPS', ''),
         'web_access_form': web_access_form,
     })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def create_account(request):
+    """Administrator-only account management page, separate from Settings."""
+    _admin(request)
+    form = AccountForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        User = get_user_model()
+        with transaction.atomic():
+            role = form.cleaned_data['role']
+            user = User.objects.create_user(username=form.cleaned_data['username'],
+                password=form.cleaned_data['password'],
+                is_staff=role != 'viewer', is_superuser=role == 'administrator')
+            _actor_action(request, 'accounts.create', f'{user.username} ({role})')
+        messages.success(request, 'Account created')
+        return redirect('settings')
+    return render(request, 'web/account_create.html', {'page':'settings', 'form':form})
 
 
 @login_required

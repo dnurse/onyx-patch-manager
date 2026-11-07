@@ -95,7 +95,7 @@ def test_native_whiptail_art_and_progress_use_approved_palette():
     assert 'actbutton=white,green' in source
     assert 'fullscale=,green' in source
     assert "--gauge" in source
-    assert "[x] " in source and "[ ] " in source
+    assert "✓  " in source and "□  " in source and "▶  " in source
     assert 'OPM_UI_GAUGE_DIR' in source
 
 

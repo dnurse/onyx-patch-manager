@@ -70,3 +70,17 @@ def update_validation_preferences(default_dry_run: bool, verbose_dry_run: bool) 
     # file mode restrictive after updates and do not create temp public data.
     ENV_FILE.write_text('\n'.join(f'{k}={v}' for k, v in sorted(entries.items())) + '\n', encoding='utf-8')
     ENV_FILE.chmod(0o600)
+
+
+def get_server_display_preferences() -> dict[str, bool]:
+    """Installation-wide display preferences; does not modify server inventory."""
+    return {'group_servers': _read_env_entries().get('OPM_WEB_GROUP_SERVERS', '0') == '1'}
+
+
+def update_server_display_preferences(group_servers: bool) -> None:
+    """Store only the requested display flag and retain other OPM configuration."""
+    entries = _read_env_entries()
+    entries['OPM_WEB_GROUP_SERVERS'] = '1' if group_servers else '0'
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ENV_FILE.write_text('\n'.join(f'{k}={v}' for k, v in sorted(entries.items())) + '\n', encoding='utf-8')
+    ENV_FILE.chmod(0o600)
