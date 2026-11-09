@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onyx-patch-manager"
-version = "0.6.0"
+version = "0.7.0"
 description = "Agentless Linux server inventory and patch management with a private web dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,4 +31,4 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-"opm.web" = ["templates/web/*.html", "static/web/*.css", "static/web/*.js"]
+"opm.web" = ["templates/web/*.html", "templates/web/partials/*.html", "static/web/*.css", "static/web/*.js", "static/web/logos/*.svg", "static/web/branding/*.svg", "static/web/branding/*.png", "static/web/branding/*.ico"]

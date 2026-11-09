@@ -113,14 +113,12 @@ def test_dashboard_default_is_numeric_ip_without_exposing_ips_to_viewers():
 def test_release_version_consistency_and_policy():
     import tomllib
     project=tomllib.loads((ROOT/'pyproject.toml').read_text())
-    assert project['project']['version']=='0.6.0'
-    assert '0.6.0' in (ROOT/'src/opm/__init__.py').read_text()
-    assert '0.6.0' in (ROOT/'OPMTUI.sh').read_text()
+    assert project['project']['version']=='0.7.0'
+    assert '0.7.0' in (ROOT/'src/opm/__init__.py').read_text()
+    assert '0.7.0' in (ROOT/'OPMTUI.sh').read_text()
     policy=(ROOT/'VERSIONING.md').read_text()
     assert 'GitHub' in policy and 'Internal' in policy and '1.0.0' in policy
-    assert not (ROOT/'GITHUB_RELEASE_v0.6.0.md').exists()
-    readme=(ROOT/'README.md').read_text()
-    assert 'https://github.com/dnurse/onyx-patch-manager/releases/tag/v0.6.0' in readme
+    assert '## v0.7.0' in (ROOT/'RELEASE_NOTES.md').read_text()
 
 
 def test_ip_default_sort_executes_in_browser_logic(tmp_path):

@@ -8,7 +8,29 @@ value to be a *mapping*, not an array of host names.
 
 from __future__ import annotations
 
+import re
 from shlex import quote
+
+
+_ORIGINAL_INVENTORY_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
+_HOST_ID = re.compile(r"[0-9a-f]{16}\Z")
+
+
+def inventory_alias(host: dict) -> str:
+    """Stable Ansible identity, independent of a server's human display name.
+
+    Preserve historical inventory names for hosts without spaces. For spaced
+    display names, use the inventory record's immutable ID. The alias is safe
+    in host patterns and Ansible Runner event/recap names; never slugify names
+    (which could collide or change when an administrator renames a server).
+    """
+    name = str(host.get('name') or '')
+    if _ORIGINAL_INVENTORY_NAME.fullmatch(name):
+        return name
+    identifier = str(host.get('id') or '')
+    if not _HOST_ID.fullmatch(identifier):
+        raise ValueError('Ansible requires a valid inventory ID for this display name')
+    return 'opm-' + identifier
 
 
 def ansible_inventory(hosts: list[dict], known_hosts: str) -> dict:
@@ -20,8 +42,8 @@ def ansible_inventory(hosts: list[dict], known_hosts: str) -> dict:
     """
     hostvars: dict[str, dict] = {}
     for host in hosts:
-        name = str(host["name"])
-        if not name or name in hostvars:
+        name = inventory_alias(host)
+        if name in hostvars:
             raise ValueError("Ansible inventory host names must be nonempty and unique")
         params = {
             "ansible_host": host["address"],

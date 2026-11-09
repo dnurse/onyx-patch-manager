@@ -9,8 +9,10 @@ remote patch has completed; the job state is queried separately.
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import ipaddress
+import time
 import uuid
 from datetime import timedelta
 from zoneinfo import available_timezones
@@ -21,16 +23,21 @@ from django.contrib.auth import authenticate, get_user_model, login, logout, pas
 from django.contrib.auth.views import PasswordChangeView
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
+from django.core import signing
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.http import Http404, HttpResponseBadRequest, JsonResponse
+from django.http import Http404, HttpResponseBadRequest, JsonResponse, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.templatetags.static import static
 from django.utils import timezone
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from django.views.decorators.cache import never_cache
 
 from opm.controller import rpc
+from opm.compose_inventory import docker_compose_projects
+from opm.host_csv import CSV_FIELDS, MAX_CSV_BYTES, csv_cell, parse_hosts_csv
+from opm.server_logos import choices_for_host, selected_repositories, cached_logo, distro_icon
 from opm.validation import sanitize, validate_host
 from .redaction import redact_for_viewer
 from .ssh_status import needs_ssh_repair
@@ -41,7 +48,8 @@ from .timeprefs import (get_configured_timezone, update_configured_timezone,
 
 
 class HostForm(forms.Form):
-    name = forms.CharField(max_length=64, label='Server name')
+    name = forms.CharField(max_length=64, label='Server name',
+                           help_text='Display label; spaces are allowed. SSH hostname is set separately.')
     address = forms.CharField(max_length=253, label='IP address or hostname')
     ssh_user = forms.CharField(max_length=32, initial='opm', label='Managed SSH user')
     ssh_port = forms.IntegerField(min_value=1, max_value=65535, initial=22, label='SSH port')
@@ -52,6 +60,18 @@ class HostForm(forms.Form):
                                                 ('read_only', 'Read-only host'), ('root', 'Direct root account')],
                                   initial='password', label='Sudo policy')
     protected = forms.BooleanField(required=False, initial=False, label='Protected server, extra patch approval')
+    logo_choice = forms.ChoiceField(required=False, label='Server logo',
+                                    choices=[('auto', 'Automatic (container first, distro fallback)')])
+
+    def __init__(self, *args, logo_options=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if logo_options is not None:
+            self.fields['logo_choice'].choices = [(opt['value'], opt['label']) for opt in logo_options]
+        self.fields['logo_choice'].help_text = (
+            'Uses Docker and Podman application artwork where available. '
+            'If no matching icon is published, the Linux distribution logo is shown. '
+            'Check the live preview before saving.')
+        self.fields['logo_choice'].widget.attrs['data-opm-logo-select'] = '1'
 
 
 class SSHRepairForm(forms.Form):
@@ -112,7 +132,8 @@ class EnrollmentForm(forms.Form):
     Passwords only exist in the browser's form and this final POST request.
     The form must not be stored in Django sessions or server-side caches.
     """
-    name = forms.CharField(max_length=64, label='Server name')
+    name = forms.CharField(max_length=64, label='Server name',
+                           help_text='Display label; spaces are allowed. SSH hostname is set separately.')
     address = forms.CharField(max_length=253, label='IP address or hostname')
     ssh_port = forms.IntegerField(min_value=1, max_value=65535, initial=22)
     group_name = forms.CharField(max_length=64, initial='Linux VMs')
@@ -151,7 +172,7 @@ class EnrollmentForm(forms.Form):
                 validate_host({'name':data['name'], 'address':data['address'],
                     'ssh_port':data['ssh_port'], 'ssh_user':'opm'})
             except ValueError as exc:
-                self.add_error('address', str(exc))
+                self.add_error('name' if str(exc).startswith('Server name') else 'address', str(exc))
         return data
 
 
@@ -277,7 +298,8 @@ def _call(method: str, **params):
 
 def _actor_action(request, action: str, subject: str = '') -> None:
     """Record operator intent without serializing submitted form secrets."""
-    AuditEvent.objects.create(actor=request.user, action=action, subject=str(subject)[:128])
+    AuditEvent.objects.create(actor=request.user, actor_name=request.user.username,
+                              action=action, subject=str(subject)[:128])
 
 
 def _operator(request):
@@ -438,7 +460,7 @@ def dashboard(request):
         # The dashboard only polls lightweight reachability; do not reload
         # the entire page every eight seconds during a background scan.
         'refresh': False,
-        'jobs': jobs[:5], 'activities': activities[:6], 'controller': controller, 'host_count': len(hosts),
+        'jobs': jobs[:5], 'activities': activities[:20], 'controller': controller, 'host_count': len(hosts),
         'scan_ok': successful, 'scan_failed': failed, 'updates': sum(h['updates'] for h in hosts),
         'active_jobs': active, 'server_display': get_server_display_preferences()})
 
@@ -482,6 +504,84 @@ def servers(request):
     hosts = _public_for(request, hosts)
     return render(request, 'web/servers.html', {'page': 'servers', 'hosts': hosts,
         'server_display': get_server_display_preferences()})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+@never_cache
+def server_csv_import(request):
+    _admin(request)
+    context = {'page': 'servers'}
+    if request.method == 'GET':
+        return render(request, 'web/server_csv_import.html', context)
+
+    salt = 'opm.server-csv-import'
+    try:
+        if 'confirm' in request.POST:
+            try:
+                batch = signing.loads(request.POST['confirm'], salt=salt, max_age=900)
+            except signing.BadSignature:
+                raise ValueError('This preview expired or is invalid. Preview the CSV again.') from None
+            if batch['actor'] != request.user.pk:
+                raise PermissionDenied
+            results = _call('hosts.csv_import', profiles=batch['profiles'])
+            added = results.count('')
+            skipped = batch['skipped'] + len(results) - added
+            _actor_action(request, 'hosts.csv_import', f'{added} added, {skipped} skipped')
+            messages.success(request, f'Added {added} server(s). Skipped {skipped} duplicate(s).')
+            return redirect('servers')
+
+        uploaded = request.FILES.get('csv_file')
+        text = request.POST.get('csv_text', '')
+        if uploaded is not None and text.strip():
+            raise ValueError('Choose a CSV file or paste CSV, then preview.')
+        if uploaded is not None:
+            if uploaded.size > MAX_CSV_BYTES:
+                raise ValueError('CSV must be 64 KiB or smaller.')
+            try:
+                text = uploaded.read().decode('utf-8-sig')
+            except UnicodeDecodeError:
+                raise ValueError('Save the CSV as UTF-8 and try again.') from None
+        rows, errors = parse_hosts_csv(text)
+        profiles = [profile for _, profile in rows]
+        results = _call('hosts.csv_preview', profiles=profiles) if profiles else []
+        context['rows'] = [
+            dict(profile, line=line, duplicate=duplicate)
+            for (line, profile), duplicate in zip(rows, results)
+        ]
+        context['errors'] = errors
+        ready = [profile for profile, duplicate in zip(profiles, results) if not duplicate]
+        context['ready_count'] = len(ready)
+        context['skipped_count'] = len(profiles) - len(ready)
+        if ready and not errors:
+            context['confirm'] = signing.dumps(
+                {'actor': request.user.pk, 'profiles': ready, 'skipped': context['skipped_count']},
+                salt=salt, compress=True,
+            )
+    except (ValueError, OSError, RuntimeError) as error:
+        context['error'] = sanitize(str(error), 300)
+    return render(request, 'web/server_csv_import.html', context)
+
+
+@login_required
+@require_GET
+@never_cache
+def server_csv_export(request):
+    _admin(request)
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
+    response['Content-Disposition'] = 'attachment; filename="opm-servers.csv"'
+    response.write('\ufeff')
+    writer = csv.writer(response)
+    writer.writerow(CSV_FIELDS)
+    cursor = ''
+    try:
+        while page := _call('hosts.csv_export', after=cursor):
+            for host in page:
+                writer.writerow(csv_cell(host[field]) for field in CSV_FIELDS)
+            cursor = page[-1]['id']
+    except (ValueError, OSError, RuntimeError):
+        return HttpResponse('Server inventory export is temporarily unavailable.', status=503)
+    return response
 
 
 @login_required
@@ -617,16 +717,69 @@ def server_edit(request, host_id):
         existing = next(h for h in _call('hosts.list') if h['id'] == host_id)
     except StopIteration:
         raise Http404('Unknown server')
-    form = HostForm(request.POST or None, initial=existing)
+    latest = next((item for item in _state() if item['id'] == host_id), existing)
+    options = choices_for_host(latest)
+    form = HostForm(request.POST or None, initial=existing, logo_options=options)
     if request.method == 'POST' and form.is_valid():
         try:
-            _call('hosts.update', id=host_id, data=form.cleaned_data)
+            # Save an independently checked visual preference through the
+            # controller. No URL or shell string comes from the browser.
+            choice = form.cleaned_data.get('logo_choice') or 'auto'
+            _call('hosts.logo.set', id=host_id, choice=choice)
+            profile = {k: v for k, v in form.cleaned_data.items() if k != 'logo_choice'}
+            _call('hosts.update', id=host_id, data=profile)
             _actor_action(request, 'hosts.update', host_id)
             messages.success(request, 'Server profile updated')
             return redirect('server_detail', host_id=host_id)
         except (ValueError, OSError) as exc:
             form.add_error(None, sanitize(str(exc), 400))
-    return render(request, 'web/host_form.html', {'page':'servers', 'form':form, 'heading':'Edit server'})
+    return render(request, 'web/host_form.html', {'page':'servers', 'form':form,
+                'heading':'Edit server', 'logo_preview_host':existing})
+
+
+@login_required
+@require_POST
+def verify_compose_configuration(request, host_id):
+    """Admin-only read-only Docker Compose verification; no arbitrary paths.
+
+    Form credentials are sent only to the memory-resident controller, never
+    written into Django model fields, session records or audit details.
+    """
+    _admin(request)
+    project = request.POST.get('project', '')
+    password = request.POST.get('sudo_password', '')
+    try:
+        result = _call('hosts.compose_verify.start', id=host_id,
+                       project=project, sudo_password=password,
+                       credential_scope=_credential_scope(request))
+        _actor_action(request, 'hosts.compose_verify.start', host_id)
+        return redirect('activity_detail', activity_id=result['activity_id'])
+    except (ValueError, RuntimeError, OSError) as exc:
+        error = str(exc).replace(password, '[REDACTED]') if password else str(exc)
+        messages.error(request, sanitize(error, 220))
+        return redirect('server_detail', host_id=host_id)
+
+
+@login_required
+@require_POST
+def update_compose_configuration(request, host_id):
+    """Explicitly approved Docker Compose pull/recreate, never automatic."""
+    _admin(request)
+    project = request.POST.get('project', '')
+    service = request.POST.get('service', '')
+    password = request.POST.get('sudo_password', '')
+    try:
+        result = _call('hosts.compose_update.start', id=host_id, project=project,
+            service=service, sudo_password=password,
+            confirm_update=request.POST.get('confirm_update') == 'yes',
+            protected_ack=request.POST.get('protected_ack') == 'yes',
+            credential_scope=_credential_scope(request))
+        _actor_action(request, 'hosts.compose_update.start', host_id)
+        return redirect('activity_detail', activity_id=result['activity_id'])
+    except (ValueError, RuntimeError, OSError) as exc:
+        error = str(exc).replace(password, '[REDACTED]') if password else str(exc)
+        messages.error(request, sanitize(error, 240))
+        return redirect('server_detail', host_id=host_id)
 
 
 @login_required
@@ -648,10 +801,96 @@ def server_detail(request, host_id):
         except (ValueError, OSError, RuntimeError):
             recent = []
         repair_needed = needs_ssh_repair(host, recent)
+    projects = docker_compose_projects(host.get('engines'))
+    if request.user.is_superuser and projects:
+        try:
+            verified = _call('hosts.compose_verifications', id=host_id)
+        except (ValueError, RuntimeError, OSError):
+            verified = []
+        checks = {(item['project'], item['scope']): item for item in verified}
+        for project in projects:
+            record = checks.get((project['name'], project['scope']))
+            if record:
+                project['verification_detail'] = record.get('detail', '')
+                project['verification_checked'] = record.get('checked', 0)
+                # Timeboxed display is informational. A future update worker
+                # must reverify before touching the deployment.
+                project['verification_state'] = (
+                    record['status'] if (time.time() - record.get('checked', 0)) < 3600
+                    else 'expired')
+            else:
+                project['verification_state'] = 'not_checked'
+            eligible = {}
+            for service in project['services']:
+                if (not service['vendor_managed'] and service['image_status'] != 'pinned'
+                        and '@sha256:' not in service['image']):
+                    eligible.setdefault(service['name'], service)
+            project['update_services'] = list(eligible.values())
+            project['can_update'] = (bool(eligible)
+                and project['verification_state'] == 'verified'
+                and host.get('sudo_mode') != 'read_only' and host.get('verified')
+                and not project['vendor_managed'] and not project['oneoff']
+                and not project['legacy_evidence'] and project['config_evidence']
+                and project['scope'] in ('root', 'OPM SSH user'))
+            project['can_verify'] = not (project['vendor_managed'] or project['oneoff']
+                 or project['legacy_evidence'] or not project['config_evidence']
+                 or project['scope'] not in ('root', 'OPM SSH user'))
+    else:
+        for project in projects:
+            project['can_verify'] = False
+            project['can_update'] = False
+            project['update_services'] = []
+            project['verification_state'] = 'not_checked'
     return render(request, 'web/host_detail.html', {
         'page': 'servers', 'host': _public_for(request, host),
-        'ssh_repair_needed': repair_needed,
+        'ssh_repair_needed': repair_needed, 'compose_project_list': projects,
     })
+
+
+@login_required
+@login_required
+@require_GET
+@never_cache
+def server_logo(request, host_id):
+    """Serve local image bytes or a distro fallback, never a third-party URL.
+
+    No browser-side hour-long caching: the chosen image can change when an
+    administrator saves the server profile or after a new scan. The controller
+    cache still avoids repeatedly downloading actual artwork.
+    """
+    try:
+        host = _call('hosts.logo_info', id=host_id)
+    except (OSError, ValueError, RuntimeError):
+        raise Http404('Server unavailable')
+    choice = None
+    if request.user.is_superuser and 'choice' in request.GET:
+        requested = str(request.GET.get('choice', ''))
+        if requested in {opt['value'] for opt in choices_for_host(host)}:
+            choice = requested
+    requested_choice = choice if choice is not None else host.get('logo_choice') or 'auto'
+    repos = selected_repositories(host, choice)
+    for repository in repos:
+        artwork = cached_logo(repository)
+        if artwork:
+            if request.GET.get('status') == '1' and request.user.is_superuser:
+                return JsonResponse({'available': True, 'repository': repository,
+                    'message': 'Application artwork available for ' + repository + '.'})
+            image, kind = artwork
+            response = HttpResponse(image, content_type=kind)
+            response['X-Content-Type-Options'] = 'nosniff'
+            return response
+    if request.GET.get('status') == '1' and request.user.is_superuser:
+        distro = distro_icon(host.get('os'))
+        if requested_choice == 'distro':
+            message = 'Linux distribution logo selected (' + distro + ').'
+        elif repos:
+            message = ('No downloadable application artwork is available for '
+                       + ', '.join(repos[:3]) + '. Showing the ' + distro + ' logo instead.')
+        else:
+            message = 'No eligible container artwork found. Showing the ' + distro + ' logo.'
+        return JsonResponse({'available': False, 'repository': '', 'message': message})
+    response = redirect(static('web/logos/' + distro_icon(host.get('os')) + '.svg'))
+    return response
 
 
 @login_required
@@ -680,8 +919,8 @@ def host_action(request, host_id, action):
         # Legacy callers should still enter the authenticated scan workflow.
         # Never attempt a background scan without the expected sudo prompt.
         return redirect('/patch/scan/authorization/?host_id=' + host_id)
-    if action == 'remove' and request.POST.get('confirm') != 'REMOVE':
-        messages.error(request, 'Type REMOVE to confirm inventory removal')
+    if action == 'remove' and request.POST.get('confirm_remove') != 'yes':
+        messages.error(request, 'Acknowledge inventory removal before continuing')
         return redirect('server_detail', host_id=host_id)
     try:
         params = {} if action == 'ensure_key' else {'id': host_id}
@@ -748,8 +987,12 @@ def patch_manager(request):
                   and os_result.get('metadata') in ('fresh', 'cached')
                   and os_result.get('package_query_ok', True) is not False
                   and h.get('sudo_mode') != 'read_only')
-        h['dry_run_eligible'] = common
-        h['live_eligible'] = common and h['updates'] > 0
+        scan_finished = scan.get('finished') or 0
+        needs_refresh = (scan.get('state') != 'completed' or
+                         time.time() - scan_finished > 3600)
+        can_refresh = bool(h.get('verified')) and h.get('sudo_mode') != 'read_only'
+        h['dry_run_eligible'] = common or (needs_refresh and can_refresh)
+        h['live_eligible'] = (common and h['updates'] > 0) or (needs_refresh and can_refresh)
     detected_engines = sum(bool(e.get('available')) for h in hosts for e in h['engines'].values())
     hosts = _public_for(request, hosts)
     return render(request, 'web/patch.html', {'page':'patch', 'hosts':hosts,
@@ -837,6 +1080,174 @@ def scan_all(request):
                         '/patch/scan/authorization/?host_id=' + host_id)
 
 
+# An in-progress Patch Manager review contains ONLY non-secret selection data.
+# SSH and sudo passwords remain restricted to the controller's RAM and a single
+# password-form POST. No password is stored in Django sessions or History.
+_REVIEW_SESSION_KEY = 'pending_patch_review'
+_REVIEW_CONTEXT_TTL = 7200
+
+
+def _pending_review(request):
+    state = request.session.get(_REVIEW_SESSION_KEY)
+    if not isinstance(state, dict) or time.time() - state.get('created', 0) > _REVIEW_CONTEXT_TTL:
+        request.session.pop(_REVIEW_SESSION_KEY, None)
+        return None
+    ids = state.get('host_ids')
+    if (not isinstance(ids, list) or not 0 < len(ids) <= 100
+            or any(not isinstance(hid, str) or len(hid) > 80 or not hid for hid in ids)
+            or state.get('mode') not in ('apply', 'dry_run')):
+        request.session.pop(_REVIEW_SESSION_KEY, None)
+        return None
+    return state
+
+
+def _refresh_candidates(ids):
+    """Return selected stale scans using the same one-hour rule as Store.
+
+    Read-only and independent of displayed host data, so Viewer redaction
+    cannot expose IP addresses in a hidden form or HTML attribute.
+    """
+    inventory = {h['id']: h for h in _call('hosts.list')}
+    if any(hid not in inventory for hid in ids):
+        raise ValueError('One of the selected servers was removed. Select servers again.')
+    if any(not inventory[hid]['verified'] or inventory[hid]['sudo_mode'] == 'read_only' for hid in ids):
+        raise ValueError('Selected server requires completed SSH setup and patch-capable sudo access')
+    scans = {s['host_id']: s for s in _call('scans.list')}
+    timestamp = time.time()
+    stale = []
+    for hid in ids:
+        scan = scans.get(hid)
+        if (not scan or scan.get('state') != 'completed'
+                or not scan.get('finished') or timestamp - scan['finished'] > 3600):
+            stale.append(inventory[hid])
+    return stale
+
+
+def _submit_pending_plan(request, state):
+    """Create a fresh immutable plan only after the selected scans are valid."""
+    prefs = get_validation_preferences()
+    plan = _call('plans.create', host_ids=state['host_ids'], mode=state['mode'],
+                 refresh_metadata=bool(state.get('refresh_metadata')),
+                 verbose_dry_run=(state['mode'] == 'dry_run' and prefs['verbose_dry_run']))
+    _actor_action(request, 'plans.create', plan['id'])
+    request.session.pop(_REVIEW_SESSION_KEY, None)
+    return redirect('plan_review', plan_id=plan['id'])
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def review_refresh(request):
+    """Inline authorization step when an OS review requires fresh scans.
+
+    GET is strictly read-only; it cannot initiate SSH, APT, or plan creation.
+    Only the operator-approved POST launches a limited read-only scan.
+    """
+    _operator(request)
+    state = _pending_review(request)
+    if not state:
+        messages.warning(request, 'Your patch selection expired. Select the servers again.')
+        return redirect('patch_manager')
+    try:
+        stale = _refresh_candidates(state['host_ids'])
+        if request.method == 'GET':
+            password_hosts = [h for h in stale if h['sudo_mode'] == 'password']
+            cached = (_call('credentials.status', credential_scope=_credential_scope(request),
+                            host_ids=[h['id'] for h in password_hosts])
+                      if password_hosts else {})
+            for host in password_hosts:
+                host['sudo_cached_seconds'] = cached.get(host['id'], 0)
+            return render(request, 'web/review_refresh.html', {
+                'page': 'patch', 'hosts': stale, 'password_hosts': password_hosts,
+                'selected_count': len(state['host_ids']), 'mode': state['mode'],
+                'all_fresh': not stale,
+            })
+        # A cancelled attempt never launches a scan or creates a plan.
+        if request.POST.get('action') == 'cancel':
+            request.session.pop(_REVIEW_SESSION_KEY, None)
+            return redirect('patch_manager')
+        if request.POST.get('action') != 'refresh':
+            raise ValueError('Unknown refresh action')
+        if not stale:
+            # No scan is necessary. Keep the normal POST-only review path.
+            return _submit_pending_plan(request, state)
+        passwords = {}
+        shared = str(request.POST.get('shared_sudo_password', ''))
+        for host in stale:
+            if host['sudo_mode'] == 'password':
+                password = str(request.POST.get('sudo_' + host['id'], '')) or shared
+                if password:
+                    if len(password) > 2048 or any(c in password for c in '\r\n\x00'):
+                        raise ValueError('Invalid sudo credential')
+                    passwords[host['id']] = password
+        scan = _call('scans.start', ids=[h['id'] for h in stale],
+                     sudo_passwords=passwords,
+                     credential_scope=_credential_scope(request))
+        state['activity_id'] = scan['activity_id']
+        request.session[_REVIEW_SESSION_KEY] = state
+        _actor_action(request, 'scans.start.review', f"{len(stale)} selected server(s)")
+        return redirect('review_refresh_progress')
+    except (ValueError, RuntimeError, OSError) as exc:
+        messages.error(request, sanitize(str(exc), 360))
+        return redirect('review_refresh')
+
+
+@login_required
+@require_POST
+def review_refresh_finish(request):
+    """Final POST-only step after a completed, explicitly authorized scan."""
+    _operator(request)
+    state = _pending_review(request)
+    if not state or not state.get('activity_id'):
+        return redirect('patch_manager')
+    try:
+        activity = _call('activities.get', id=state['activity_id'])
+        if activity.get('kind') != 'scan' or activity['state'] not in ('completed', 'partial'):
+            raise ValueError('The requested scan has not finished successfully')
+        if _refresh_candidates(state['host_ids']):
+            raise ValueError('One or more selected scans need attention before patch review')
+    except (ValueError, RuntimeError, OSError) as exc:
+        messages.error(request, sanitize(str(exc), 360))
+        return redirect('review_refresh')
+    try:
+        return _submit_pending_plan(request, state)
+    except (ValueError, RuntimeError, OSError) as exc:
+        # A genuinely stale scan at this boundary should offer the refresh
+        # again; other invalid plans must not cause an automatic POST loop.
+        if 'run a fresh scan (within 1 hour)' in str(exc):
+            return redirect('review_refresh')
+        request.session.pop(_REVIEW_SESSION_KEY, None)
+        messages.error(request, sanitize(str(exc), 360))
+        return redirect('patch_manager')
+
+
+@login_required
+@require_GET
+def review_refresh_progress(request):
+    """Wait for the requested scan and continue directly to the review page.
+
+    Never repeat a failed, partial, or interrupted scan automatically.
+    A failed scan leaves the selection available for a deliberate retry.
+    """
+    _operator(request)
+    state = _pending_review(request)
+    if not state or not state.get('activity_id'):
+        return redirect('patch_manager')
+    try:
+        activity = _call('activities.get', id=state['activity_id'])
+        if activity.get('kind') != 'scan':
+            raise ValueError('Unexpected scan activity')
+        ready = (activity['state'] in ('completed', 'partial')
+                 and not _refresh_candidates(state['host_ids']))
+        return render(request, 'web/review_refresh_progress.html', {
+            'page': 'patch', 'activity': activity, 'ready': ready,
+            'waiting': activity['state'] in ('queued', 'running'),
+            'refresh': activity['state'] in ('queued', 'running'),
+        })
+    except (ValueError, RuntimeError, OSError) as exc:
+        messages.error(request, sanitize(str(exc), 360))
+        return redirect('review_refresh')
+
+
 @login_required
 @require_POST
 def create_plan(request):
@@ -849,14 +1260,18 @@ def create_plan(request):
         mode = str(request.POST.get('execution_mode', 'apply'))
         if mode not in ('apply', 'dry_run'):
             raise ValueError('Invalid execution mode')
-        prefs = get_validation_preferences()
-        plan = _call('plans.create', host_ids=ids, mode=mode,
-                     refresh_metadata=(mode == 'dry_run' and
-                                       request.POST.get('refresh_metadata') == 'yes'),
-                     verbose_dry_run=(mode == 'dry_run' and prefs['verbose_dry_run']))
-        _actor_action(request, 'plans.create', plan['id'])
-        return redirect('plan_review', plan_id=plan['id'])
-    except (ValueError, OSError) as exc:
+        if not ids:
+            raise ValueError('Select at least one server')
+        # Preserve only the selection/mode, never SSH or sudo credentials.
+        request.session[_REVIEW_SESSION_KEY] = {
+            'host_ids': ids, 'mode': mode,
+            'refresh_metadata': mode == 'dry_run' and request.POST.get('refresh_metadata') == 'yes',
+            'created': time.time(),
+        }
+        if _refresh_candidates(ids):
+            return redirect('review_refresh')
+        return _submit_pending_plan(request, request.session[_REVIEW_SESSION_KEY])
+    except (ValueError, OSError, RuntimeError) as exc:
         messages.error(request, sanitize(str(exc), 400))
         return redirect('patch_manager')
 
@@ -881,6 +1296,8 @@ def plan_review(request, plan_id):
     return render(request, 'web/review.html', {'page':'patch','plan':plan,
         'targets':targets, 'idempotency':uuid.uuid4().hex,
         'any_protected':any(t['protected'] for t in targets),
+        'any_repository_warnings': plan['snapshot'].get('mode') == 'apply' and any(
+            t.get('scan_metadata') == 'cached' for t in targets),
         'execution_mode': plan['snapshot'].get('mode', 'apply')})
 
 
@@ -901,7 +1318,8 @@ def plan_execute(request, plan_id):
                     passwords[target['host_id']] = password
         # The authenticated, CSRF-protected action button is the confirmation.
         # Protected hosts require their own explicitly labeled submit action.
-        _call('plans.approve', id=plan_id, protected_ack=request.POST.get('protected_ack')=='yes')
+        _call('plans.approve', id=plan_id, protected_ack=request.POST.get('protected_ack')=='yes',
+              repo_warning_ack=request.POST.get('repo_warning_ack')=='yes')
         _actor_action(request, 'plans.approve', plan_id)
         job = _call('jobs.start', plan_id=plan_id, idempotency=str(request.POST.get('idempotency', '')),
                     sudo_passwords=passwords, credential_scope=_credential_scope(request))
@@ -976,7 +1394,7 @@ def history(request):
                 items.append({'id':str(audit.pk), 'type':'audit', 'kind':'audit',
                     'label':audit.action.replace('.', ' ').replace('_',' ').title(),
                     'state':'recorded', 'created':audit.created.timestamp(),
-                    'detail':audit.subject, 'actor':audit.actor.username if audit.actor else 'Deleted account',
+                    'detail':audit.subject, 'actor':audit.actor.username if audit.actor else (audit.actor_name or 'Deleted account'),
                     'events':[]})
         except Exception:
             messages.warning(request, 'Web audit history could not be loaded')
@@ -990,24 +1408,25 @@ def history(request):
 @login_required
 @require_POST
 def clear_history(request):
-    """Administrator-only deletion of completed patch history.
+    """Administrator-only, acknowledged removal of all operation history.
 
-    Web users cannot call arbitrary controller methods. The controller
-    independently refuses deletion during active jobs and keeps inventory,
-    scan results, login accounts and the Django audit trail intact.
+    Work is rejected while a job/activity is active. Inventory, scan data,
+    accounts, and persisted source verification remain untouched. Do not
+    re-add an AuditEvent after deletion: the user explicitly cleared audits.
     """
     if not request.user.is_superuser:
-        raise PermissionDenied('Only administrators can clear patch history')
+        raise PermissionDenied('Only administrators can clear all history')
     if request.POST.get('confirm_clear') != 'yes':
-        messages.error(request, 'Confirm deletion of completed patch history')
+        messages.error(request, 'Acknowledge permanent deletion of all history')
         return redirect('history')
     try:
-        result = _call('jobs.clear')
-        _actor_action(request, 'history.clear', f"{result['deleted']} jobs")
+        result = _call('history.clear')
+        summary = (f"Removed {result['jobs']} patch jobs, "
+                   f"{result['activities']} activities and {result['audits']} audit records")
         if result.get('artifact_cleanup_errors'):
-            messages.warning(request, 'History cleared, but some old artifact files could not be removed')
+            messages.warning(request, summary + '; some old job files could not be removed')
         else:
-            messages.success(request, f"Removed {result['deleted']} completed patch job records")
+            messages.success(request, summary)
     except (ValueError, RuntimeError, OSError) as exc:
         messages.error(request, sanitize(str(exc), 300))
     return redirect('history')
@@ -1023,9 +1442,16 @@ def dismiss_alerts(request):
         result = _call('alerts.acknowledge')
         _actor_action(request, 'alerts.acknowledge', 'historical failures')
         count = result['job_alerts'] + result['activity_alerts']
-        messages.success(request, f'Acknowledged {count} historical failure alert(s)')
+        messages.success(request, f'Cleared {count} alert(s); history is preserved')
     except (ValueError, RuntimeError, OSError) as exc:
         messages.error(request, sanitize(str(exc), 300))
+    # The header's Clear alerts button should keep operators on their page.
+    from django.utils.http import url_has_allowed_host_and_scheme
+    next_path = str(request.POST.get('next', ''))
+    if next_path and next_path.startswith('/') and not next_path.startswith('//') and \
+            url_has_allowed_host_and_scheme(next_path, allowed_hosts={request.get_host()},
+                                            require_https=request.is_secure()):
+        return redirect(next_path)
     return redirect('history')
 
 
@@ -1056,8 +1482,8 @@ def job_detail(request, job_id):
 @require_POST
 def cancel_job(request, job_id):
     _operator(request)
-    if request.POST.get('confirm') != 'CANCEL':
-        messages.error(request, 'Type CANCEL to request cancellation')
+    if request.POST.get('confirm_cancel') != 'yes':
+        messages.error(request, 'Acknowledge cancellation before continuing')
     else:
         _safe_op(request, 'jobs.cancel', 'job_detail', job_id, id=job_id)
     return redirect('job_detail', job_id=job_id)
@@ -1223,22 +1649,55 @@ def edit_account(request, user_id):
 
 @login_required
 @require_POST
-def disable_account(request, user_id):
-    """Allow administrators to revoke another account without deleting audits."""
-    if not request.user.is_superuser:
-        raise PermissionDenied('Administrator access required')
-    if request.POST.get('confirm') != 'DISABLE':
-        messages.error(request, 'Type DISABLE to confirm account revocation')
-        return redirect('settings')
+def account_status(request, user_id):
+    """Explicit, CSRF-protected enable/disable with last-admin protection."""
+    _admin(request)
+    action = request.POST.get('action')
+    if action not in ('enable', 'disable'):
+        return HttpResponseBadRequest('Unknown account status action')
+    if action == 'disable' and request.POST.get('confirm_disable') != 'yes':
+        return HttpResponseBadRequest('Confirm account disable')
     User = get_user_model()
     with transaction.atomic():
         user = User.objects.select_for_update().filter(pk=user_id).first()
-        if user is None or user.pk == request.user.pk:
-            raise PermissionDenied('You cannot deactivate your own account')
-        if user.is_superuser and User.objects.filter(is_superuser=True, is_active=True).count() <= 1:
-            raise PermissionDenied('The last active administrator cannot be deactivated')
-        user.is_active = False
-        user.save(update_fields=['is_active'])
-        _actor_action(request, 'accounts.disable', user.username)
-    messages.success(request, 'Account disabled')
+        if user is None:
+            raise Http404('Unknown account')
+        if user.pk == request.user.pk:
+            raise PermissionDenied('You cannot change your own account status')
+        if action == 'disable' and user.is_superuser and user.is_active:
+            if User.objects.filter(is_superuser=True, is_active=True).count() <= 1:
+                raise PermissionDenied('Cannot disable the last active administrator')
+        desired = action == 'enable'
+        if user.is_active != desired:
+            user.is_active = desired
+            user.save(update_fields=['is_active'])
+            _actor_action(request, 'accounts.enable' if desired else 'accounts.disable', user.username)
+    messages.success(request, f'Account {user.username} {"enabled" if desired else "disabled"}')
+    return redirect('edit_account', user_id=user_id)
+
+
+@login_required
+@require_POST
+def delete_account(request, user_id):
+    """Remove another login while preserving existing audit records and identity."""
+    _admin(request)
+    User = get_user_model()
+    with transaction.atomic():
+        user = User.objects.select_for_update().filter(pk=user_id).first()
+        if user is None:
+            raise Http404('Unknown account')
+        if user.pk == request.user.pk:
+            raise PermissionDenied('You cannot delete your own account')
+        if request.POST.get('confirm_delete') != 'yes':
+            return HttpResponseBadRequest('Confirm permanent account deletion')
+        if user.is_superuser and user.is_active:
+            if User.objects.filter(is_superuser=True, is_active=True).count() <= 1:
+                raise PermissionDenied('Cannot delete the last active administrator')
+        old_name = user.username
+        # Older AuditEvent rows may predate the actor-name snapshot field.
+        # Preserve attribution before Django nulls their actor FK on deletion.
+        AuditEvent.objects.filter(actor=user).update(actor_name=old_name)
+        user.delete()
+        _actor_action(request, 'accounts.delete', old_name)
+    messages.success(request, f'Account {old_name} deleted')
     return redirect('settings')

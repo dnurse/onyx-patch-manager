@@ -1,5 +1,5 @@
 {% extends 'web/base.html' %}{% load static %}
-{% block breadcrumb %}Servers / Setup wizard{% endblock %}
+{% block breadcrumb_parents %}<a href="{% url 'servers' %}">Servers</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Setup wizard{% endblock %}
 {% block title %}Add server{% endblock %}
 {% block body %}
 <div class="page-intro">
@@ -20,7 +20,7 @@
     <section class="enroll-step" data-step="1" aria-label="Administrator login">
       <div class="enroll-step-heading"><span class="step-number">01</span><div><h2>Connect with your existing login</h2><p class="subtle">OPM uses these credentials once to set up its dedicated account. Your personal account is not used for future patching.</p></div></div>
       <div class="form-grid">
-        <div><label for="id_name">Server name</label>{{ form.name }}{{ form.name.errors }}</div>
+        <div><label for="id_name">Server name</label>{{ form.name }}<p class="field-hint">Display label; spaces are allowed. Connection address is separate.</p>{{ form.name.errors }}</div>
         <div><label for="id_address">IP address or hostname</label>{{ form.address }}{{ form.address.errors }}</div>
         <div><label for="id_ssh_port">SSH port</label>{{ form.ssh_port }}{{ form.ssh_port.errors }}</div>
         <div><label for="id_group_name">Group</label>{{ form.group_name }}</div>

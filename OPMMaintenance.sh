@@ -575,7 +575,7 @@ menu() {
         opm_ui_run_and_show ' Uninstall result ' choose_uninstall_mode || true
         # A completed uninstall closes the utility, not the maintenance menu.
         [[ "${OPM_UNINSTALL_COMPLETED:-0}" == 1 ]] && return 0
-        ;;
+        ;; 
       6) opm_ui_run_and_show ' OPM Installer Help ' help_text || true ;;
       7) return 0 ;;
     esac

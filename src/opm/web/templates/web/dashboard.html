@@ -30,7 +30,7 @@
       <thead><tr><th>Server</th><th>Connection</th><th>Last scan</th><th>Scan time</th><th>Updates</th><th>RAM</th><th>Disk</th><th>Uptime</th></tr></thead>
       <tbody>{% for h in hosts %}
         <tr data-server-row data-server-ip-rank="{{ forloop.counter0 }}" data-server-name="{{ h.name }}" data-server-group="{{ h.group_name|default:'Ungrouped' }}" data-server-updates="{{ h.updates }}" data-server-scan="{{ h.scan.finished|default:'0' }}">
-          <td data-label="Server"><a class="server-link" href="{% url 'server_detail' h.id %}"><span class="machine-icon{% if h.protected %} is-protected{% endif %}" {% if h.protected %}title="Protected server" aria-label="Protected server"{% endif %}>{% if h.protected %}{% else %}▤{% endif %}</span><span><strong>{{ h.name }}</strong><small>{% if request.user.is_staff %}{{ h.address }}{% else %}Address restricted{% endif %}</small></span></a></td>
+          <td data-label="Server"><a class="server-link" href="{% url 'server_detail' h.id %}">{% include 'web/partials/server_logo.html' with server=h %}<span><strong>{{ h.name }}</strong><small>{% if request.user.is_staff %}{{ h.address }}{% else %}Address restricted{% endif %}</small></span></a></td>
           <td data-label="Connection" class="connection-cell"><div class="connection-pill-wrap"><span class="status neutral" data-host-connection="{{ h.id }}" title="Waiting for ICMP ping">Checking...</span><small class="ping-diagnostic" data-host-ping-diagnostic="{{ h.id }}" hidden></small></div></td>
           <td data-label="Last scan">{% if not h.verified %}<span class="status setup-needed">Setup required</span>{% elif h.scan.state == 'completed' %}{% if h.os.metadata != 'fresh' and h.os.family == 'debian' or h.os.metadata != 'fresh' and h.os.family == 'ubuntu' %}<span class="status warn">Partial</span>{% else %}<span class="status ok">Completed</span>{% endif %}{% elif h.scan.state == 'failed' %}<span class="status danger">Failed</span>{% elif h.scan.state == 'running' %}<span class="status neutral loading">Scanning</span>{% else %}<span class="status neutral">Not scanned</span>{% endif %}</td>
           <td data-label="Scan time" class="scan-time-column">{{ h.scan.finished|scan_time }}</td>
@@ -47,8 +47,8 @@
 <section class="surface side-panel"><div class="surface-heading"><div><h2>Recent activity</h2><p>Scans, SSH tests, enrollment and patch jobs</p></div></div>
 <div class="activity-list">{% for a in activities %}
 <a href="{% if a.kind == 'patch' %}{% url 'job_detail' a.id %}{% else %}{% url 'activity_detail' a.id %}{% endif %}" class="activity">
-<span class="activity-mark {% if a.state == 'completed' or a.state == 'simulated' %}success{% elif a.state == 'failed' or a.state == 'partial' or a.state == 'interrupted' %}error{% endif %}"></span>
-<span><strong>{{ a.label }}</strong><small>{{ a.state|title }} · {{ a.created|scan_time }}</small></span></a>
+<span class="activity-mark {% if a.state == 'completed' or a.state == 'simulated' %}success{% elif a.state == 'completed_with_warnings' %}warning{% elif a.state == 'failed' or a.state == 'partial' or a.state == 'interrupted' %}error{% endif %}"></span>
+<span><strong>{{ a.label }}</strong><small>{{ a.state|job_state_label }} · {{ a.created|scan_time }}</small></span></a>
 {% empty %}<div class="empty-minor">No background operations yet.</div>{% endfor %}</div>
 <a href="{% url 'history' %}" class="text-link panel-bottom-link">Open history</a></section></div>
 <p class="footnote">Connection reflects an ICMP echo reply, not SSH or application health. Servers can block ping while remaining online. Package counts, RAM, disk and uptime reflect the last full scan.</p>

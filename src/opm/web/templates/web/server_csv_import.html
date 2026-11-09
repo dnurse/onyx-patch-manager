@@ -1,0 +1,57 @@
+{% extends 'web/base.html' %}
+{% block breadcrumb_parents %}<a href="{% url 'servers' %}">Servers</a> <span class="breadcrumb-separator" aria-hidden="true">/</span>{% endblock %}
+{% block breadcrumb %}Import CSV{% endblock %}
+{% block title %}Import servers from CSV{% endblock %}
+{% block body %}
+<div class="page-intro">
+  <div>
+    <p class="eyebrow">INVENTORY</p>
+    <h1>Import servers from CSV</h1>
+    <p class="subtle">Add server profiles in bulk, then use Finish setup to verify SSH and enroll each host.</p>
+  </div>
+  <a class="btn ghost" href="{% url 'servers' %}">Back to Servers</a>
+</div>
+{% if error %}<div class="flash error" role="alert">{{ error }}</div>{% endif %}
+<section class="surface form-panel">
+  <div class="surface-heading"><div><h2>Upload or paste CSV</h2><p>UTF-8 CSV, up to 250 servers and 64 KiB per file. Comma, semicolon and tab separators are supported.</p></div></div>
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    {% csrf_token %}
+    <label for="server-csv-file">CSV file</label>
+    <input type="file" id="server-csv-file" name="csv_file" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+    <label for="server-csv-text">Or paste CSV</label>
+    <textarea id="server-csv-text" name="csv_text" rows="5" spellcheck="false" autocomplete="off"></textarea>
+    <p class="muted small">Use OPM's export columns or Checkmk's hostname, IP address and alias columns. A hostname-only list also works. Leave IP addresses blank to use hostnames. Only include inventory fields.</p>
+    <div class="form-actions"><button class="btn primary" type="submit">Preview import</button></div>
+  </form>
+</section>
+{% if errors or rows %}
+<section class="surface">
+  <div class="surface-heading"><div><h2>Import preview</h2><p>{{ ready_count }} ready · {{ skipped_count }} duplicate{{ skipped_count|pluralize }} skipped</p></div></div>
+  {% if errors %}
+  <div class="flash error" role="alert">
+    <p>Fix these rows and preview the CSV again.</p>
+    <ul>{% for line, message in errors %}<li>Line {{ line }} — {{ message }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if rows %}
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead><tr><th scope="col">Line</th><th scope="col">Server</th><th scope="col">Address</th><th scope="col">SSH port</th><th scope="col">Group</th><th scope="col">Protected</th><th scope="col">Result</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr><td data-label="Line">{{ row.line }}</td><td data-label="Server">{{ row.name }}</td><td data-label="Address">{{ row.address }}</td><td data-label="SSH port">{{ row.ssh_port }}</td><td data-label="Group">{{ row.group_name }}</td><td data-label="Protected">{{ row.protected|yesno:'Yes,No' }}</td><td data-label="Result">{{ row.duplicate|default:'Ready to add' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if confirm %}
+  <form method="post" class="form-stack">
+    {% csrf_token %}
+    <input type="hidden" name="confirm" value="{{ confirm }}">
+    <div class="form-actions"><button class="btn primary" type="submit">Add {{ ready_count }} server{{ ready_count|pluralize }}</button></div>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

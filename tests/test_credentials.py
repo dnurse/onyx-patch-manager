@@ -21,7 +21,7 @@ def ready_password_plan(store, host_data):
                                   "package_query_ok": True,
                                   "packages": [{"name": "curl", "current": "1", "candidate": "2"}]}})
     plan = store.create_plan([host["id"]])
-    store.approve_plan(plan["id"], "owner", False, "PATCH")
+    store.approve_plan(plan["id"], "owner", False, repo_warning_ack=True)
     return host, plan
 
 

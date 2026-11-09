@@ -303,15 +303,20 @@ detect_timezone() {
 }
 
 start_step 'Refreshing Debian package indexes'
-run_logged apt-get -qq update
+if [[ "$HAS_EXISTING_INSTALL" == 0 ]]; then
+  run_logged apt-get -qq update
+fi
 end_step
 
 start_step 'Installing Python and required system packages'
 # iputils-ping enables unprivileged ICMP echo checks in supported LXC configs.
 # We intentionally do NOT require privileged LXC or add CAP_NET_RAW.
-run_logged apt-get -qq install -y python3 python3-venv python3-pip python3-dev \
-  build-essential libffi-dev libssl-dev openssh-client sudo sqlite3 \
-  ca-certificates iputils-ping iproute2
+# Existing installations retain their OS packages during an OPM upgrade.
+if [[ "$HAS_EXISTING_INSTALL" == 0 ]]; then
+  run_logged apt-get -qq install -y python3 python3-venv python3-pip python3-dev \
+    build-essential libffi-dev libssl-dev openssh-client sudo sqlite3 \
+    ca-certificates iputils-ping iproute2
+fi
 end_step
 
 start_step 'Preparing the dedicated OPM service account'
@@ -512,6 +517,11 @@ run_logged install -o root -g root -m 0755   "$SRC_DIR/OPMMaintenance.sh" /usr/l
 # This avoids executing a service-owned script with root permissions later.
 run_logged install -o root -g root -m 0644 "$SRC_DIR/OPMWebAccess.py" /usr/local/share/opm-installer/OPMWebAccess.py
 run_logged install -o root -g root -m 0644 "$SRC_DIR/OPMTUI.sh" /usr/local/share/opm-installer/OPMTUI.sh
+# Refresh the optional signed-deployment helper only where it is already enabled.
+if [[ -f /usr/local/sbin/opm-deploy && ! -L /usr/local/sbin/opm-deploy ]]; then
+  run_logged install -o root -g root -m 0700 /usr/local/sbin/opm-deploy "$LOG_DIR/opm-deploy-before-$TIMESTAMP"
+  run_logged install -o root -g root -m 0755 "$SRC_DIR/OPMDeploy.py" /usr/local/sbin/opm-deploy
+fi
 end_step
 
 start_step 'Checking administrator account'

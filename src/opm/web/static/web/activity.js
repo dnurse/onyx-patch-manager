@@ -18,6 +18,7 @@
   const live = new Map();
   const activeStates = new Set(['queued', 'running']);
   const problems = new Set(['failed', 'partial', 'interrupted', 'partially_completed']);
+  const warnings = new Set(['completed_with_warnings']);
   let pending = false;
   let timer = null;
   let toastTimer = null;
@@ -31,7 +32,7 @@
   const pageFor = item => item.kind === 'patch'
     ? `/history/${encodeURIComponent(item.id)}/`
     : `/activity/${encodeURIComponent(item.id)}/`;
-  const stateClass = state => problems.has(state) ? 'danger'
+  const stateClass = state => warnings.has(state) ? 'warn' : problems.has(state) ? 'danger'
     : (state === 'completed' || state === 'simulated') ? 'ok' : 'neutral';
   const formatTime = seconds => seconds ? new Date(seconds * 1000).toLocaleString() : '';
   const progress = item => {

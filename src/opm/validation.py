@@ -13,7 +13,9 @@ from pathlib import Path
 
 
 HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
-NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+# User-facing display names are not SSH hostnames or Ansible inventory IDs.
+# Allow single internal spaces but retain conservative, bounded printable text.
+NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*(?: [A-Za-z0-9_.-]+)*\Z")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 SENSITIVE_RE = re.compile(
     r"(?i)((?:password|token|api[_-]?key|authorization|secret)\s*[:=]\s*)([^\s,;]+)"
@@ -36,8 +38,8 @@ def validate_host(payload: dict) -> dict:
     """Normalize public host fields and reject unsafe SSH argument injection."""
     name = str(payload.get("name", "")).strip()
     user = str(payload.get("ssh_user", "")).strip()
-    if not NAME_RE.fullmatch(name):
-        raise ValueError("Server name must begin with a letter and use letters, digits, dot, dash or underscore")
+    if len(name) > 64 or not NAME_RE.fullmatch(name):
+        raise ValueError("Server name must begin with a letter and contain only letters, numbers, spaces, dots, dashes or underscores (64 characters maximum)")
     if not USER_RE.fullmatch(user):
         raise ValueError("Invalid SSH username")
     try:

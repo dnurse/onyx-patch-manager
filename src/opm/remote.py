@@ -192,8 +192,18 @@ def containers(engine, prefix=None, scope='OPM SSH user',
             state = item.get('State') or {}
             health = (state.get('Health') or {}).get('Status')
             image_ref = config.get('Image') or item.get('ImageName') or ''
+            # Docker Compose evidence must be based on Docker's own labels;
+            # Podman Compose and standalone containers are outside update scope.
+            docker_compose = (engine == 'docker'
+                              and bool(labels.get('com.docker.compose.project'))
+                              and bool(labels.get('com.docker.compose.service')))
             project = labels.get('com.docker.compose.project') or labels.get('io.podman.compose.project')
             service = labels.get('com.docker.compose.service') or labels.get('io.podman.compose.service')
+            # Record PRESENCE only. Absolute paths may expose deployment details,
+            # and must be independently revalidated before any future update.
+            config_files_present = bool(labels.get('com.docker.compose.project.config_files'))
+            working_dir_present = bool(labels.get('com.docker.compose.project.working_dir'))
+            oneoff = str(labels.get('com.docker.compose.oneoff') or '').lower() == 'true'
             # Identify the *workload*, not the Linux account. An account can
             # own both vendor-managed and user-managed containers.
             image_names = (str(image_ref).lower(),
@@ -213,6 +223,11 @@ def containers(engine, prefix=None, scope='OPM SSH user',
                             'state': str(state.get('Status') or 'unknown'),
                             'health': health or 'not configured',
                             'project': project, 'service': service,
+                            'compose_origin': ('docker-compose' if docker_compose else
+                                               'other-compose' if project and service else ''),
+                            'compose_has_config_files': config_files_present if docker_compose else False,
+                            'compose_has_working_dir': working_dir_present if docker_compose else False,
+                            'compose_oneoff': oneoff if docker_compose else False,
                             'deployment': ('vendor-managed (UniFi OS Server)' if vendor_managed
                                            else 'compose candidate' if project and service else 'standalone / unknown'),
                             'update_status': status, 'update_reason': reason,
@@ -412,6 +427,189 @@ else:
 # command-line flag selects a dedicated branch, so Python emits a single
 # parseable JSON object even when other discovery branches are refactored.
 REMOTE_OS_INSPECT = REMOTE_INSPECT
+
+
+# This fixed program is sent over existing key-authenticated SSH only after
+# an administrator explicitly requests Compose verification. The only dynamic
+# source value is a JSON-encoded, strictly validated Compose project name.
+# It never pulls images, fetches registry metadata, starts/stops workloads,
+# or prints Docker inspect JSON, Compose contents, environment or file paths.
+REMOTE_COMPOSE_VERIFY = r'''
+import json
+import os
+import re
+import subprocess
+import sys
+
+EXPECTED_PROJECT = ''
+
+
+def run(argv, cwd=None, timeout=25):
+    try:
+        completed = subprocess.run(argv, cwd=cwd, capture_output=True,
+                                   text=True, timeout=timeout, check=False)
+        return completed.returncode, completed.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ''
+
+
+def fail(reason):
+    return {'status': 'unverified', 'detail': reason, 'service_count': 0,
+            'container_count': 0}
+
+
+def verify():
+    project = EXPECTED_PROJECT
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,119}', project):
+        return fail('Invalid Compose project name')
+    rc, ids = run(['docker', 'ps', '-aq', '--filter',
+                   'label=com.docker.compose.project=' + project])
+    if rc:
+        return fail('Docker engine is unavailable to the verification account')
+    identifiers = [x.strip() for x in ids.splitlines() if x.strip()]
+    if not identifiers or len(identifiers) > 128:
+        return fail('No unique running Compose deployment found')
+    rc, raw = run(['docker', 'inspect', *identifiers], timeout=40)
+    if rc:
+        return fail('Could not inspect project containers')
+    try:
+        containers = json.loads(raw)
+    except (ValueError, TypeError):
+        return fail('Docker inspect response was invalid')
+    if not isinstance(containers, list) or len(containers) != len(identifiers):
+        return fail('Container inventory changed during verification')
+    identities = set()
+    hashes = {}
+    services = set()
+    for item in containers:
+        labels = (item.get('Config') or {}).get('Labels') or {}
+        if labels.get('com.docker.compose.project') != project:
+            return fail('Compose project identity changed')
+        service = str(labels.get('com.docker.compose.service') or '')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,119}', service):
+            return fail('Unrecognized or missing Compose service label')
+        if str(labels.get('com.docker.compose.oneoff') or '').lower() == 'true':
+            return fail('One-off Compose containers cannot be verified for updates')
+        image = str((item.get('Config') or {}).get('Image') or '').lower()
+        if (image.startswith(('uosserver:', 'localhost/uosserver:',
+                             'docker.io/library/uosserver:'))):
+            return fail('Vendor-controlled workload is excluded')
+        working = str(labels.get('com.docker.compose.project.working_dir') or '')
+        config_string = str(labels.get('com.docker.compose.project.config_files') or '')
+        paths = tuple(config_string.split(','))
+        if not os.path.isabs(working) or not os.path.isdir(working):
+            return fail('Original Compose project directory is unavailable')
+        if (not paths or len(paths) > 12 or
+            any(not os.path.isabs(f) or not os.path.isfile(f) for f in paths)):
+            return fail('Original Compose file is missing or inaccessible')
+        if any(len(f) > 2048 or any(c in f for c in '\r\n\x00') for f in paths):
+            return fail('Invalid Compose file metadata')
+        identities.add((working, paths))
+        h = str(labels.get('com.docker.compose.config-hash') or '')
+        if not h or not re.fullmatch(r'[a-fA-F0-9]{64}', h):
+            return fail('Deployed container has no comparable Compose configuration hash')
+        hashes.setdefault(service, set()).add(h.lower())
+        services.add(service)
+    if len(identities) != 1:
+        return fail('Inconsistent Compose provenance across project containers')
+    working, files = next(iter(identities))
+    base = ['docker', 'compose', '--project-directory', working,
+            '-p', project]
+    for file in files:
+        base.extend(('-f', file))
+    rc, _ = run(base + ['config', '--quiet'], cwd=working, timeout=50)
+    if rc:
+        return fail('Compose config validation failed (check env files and interpolation)')
+    rc, listing = run(base + ['config', '--services'], cwd=working, timeout=40)
+    if rc:
+        return fail('Cannot enumerate services from the original Compose files')
+    defined = set(listing.splitlines())
+    if not services.issubset(defined):
+        return fail('Running services do not match the Compose source')
+    # Compose V2 declares --hash as a STRING option (service name or '*').
+    # A bare --hash is invalid and previously made every verification fail.
+    # Hash only the services whose deployed labels we are comparing.
+    rc, output = run(base + ['config', '--hash=' + ','.join(sorted(services))],
+                     cwd=working, timeout=40)
+    if rc:
+        return fail('Compose service hashes are not available')
+    config_hashes = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and re.fullmatch('[a-fA-F0-9]{64}', fields[1]):
+            config_hashes[fields[0]] = fields[1].lower()
+    if not all(s in config_hashes and hashes[s] == {config_hashes[s]}
+               for s in services):
+        return fail('Running container configuration differs from Compose source')
+    return {'status': 'verified', 'detail': 'Compose source matches deployed services',
+            'service_count': len(services), 'container_count': len(identifiers)}
+
+try:
+    result = verify()
+except Exception:
+    # Never include arbitrary exceptions: they can contain private paths,
+    # Compose interpolation values, registry credentials, or env content.
+    result = fail('Compose verification could not be completed')
+print(json.dumps(result, separators=(',', ':')))
+'''
+
+
+def verify_compose_source(host: dict, config: Config, project: str,
+                          sudo_password: str | None = None) -> dict:
+    """Verify Compose provenance without updating, pulling, or disclosing files.
+
+    The source paths originate only from fresh Docker inspect labels fetched on
+    the managed host. A web request never supplies a filesystem path or command.
+    """
+    import re
+    if not isinstance(project, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,119}', project):
+        raise RemoteError('Invalid Docker Compose project')
+    script = REMOTE_COMPOSE_VERIFY.replace("EXPECTED_PROJECT = ''",
+                                          'EXPECTED_PROJECT = ' + json.dumps(project))
+    cmd = _sudo_args(host, ['python3', '-'], sudo_password)
+    raw = ssh_command(host, config, cmd,
+        ((sudo_password + '\n') if sudo_password else '') + script, timeout=190)
+    try:
+        result = json.loads(raw)
+        if (not isinstance(result, dict) or result.get('status') not in
+                ('verified', 'unverified') or
+                not isinstance(result.get('service_count'), int) or
+                not isinstance(result.get('container_count'), int)):
+            raise ValueError('Invalid verification response')
+        # The remote code uses only fixed diagnostic strings. Additional keys
+        # are deliberately discarded rather than written into History.
+        allowed = {
+            'Compose source matches deployed services',
+            'Invalid Compose project name',
+            'Docker engine is unavailable to the verification account',
+            'No unique running Compose deployment found',
+            'Could not inspect project containers',
+            'Docker inspect response was invalid',
+            'Container inventory changed during verification',
+            'Compose project identity changed',
+            'Unrecognized or missing Compose service label',
+            'One-off Compose containers cannot be verified for updates',
+            'Vendor-controlled workload is excluded',
+            'Original Compose project directory is unavailable',
+            'Original Compose file is missing or inaccessible',
+            'Invalid Compose file metadata',
+            'Deployed container has no comparable Compose configuration hash',
+            'Inconsistent Compose provenance across project containers',
+            'Compose config validation failed (check env files and interpolation)',
+            'Cannot enumerate services from the original Compose files',
+            'Running services do not match the Compose source',
+            'Compose service hashes are not available',
+            'Running container configuration differs from Compose source',
+            'Compose verification could not be completed',
+        }
+        detail = str(result.get('detail') or '')
+        if detail not in allowed:
+            raise ValueError('Unrecognized verification diagnostic')
+        return {'status': result['status'], 'detail': detail,
+                'service_count': min(max(0, result['service_count']), 128),
+                'container_count': min(max(0, result['container_count']), 128)}
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RemoteError('Docker Compose verification produced an invalid result') from exc
 
 
 class RemoteError(RuntimeError):

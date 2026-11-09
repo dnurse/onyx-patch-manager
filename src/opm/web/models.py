@@ -15,12 +15,14 @@ class LoginFailure(models.Model):
 
 
 class AuditEvent(models.Model):
-    """Immutable application-level record of the authenticated actor.
+    """Append-only application record until explicit administrator deletion.
 
-    Never put passwords, tokens, SSH private keys or resolved Compose config
-    into these records. Errors are handled separately by the controller.
+    The administrator-only Clear all history operation can irreversibly
+    remove audit entries. Never put passwords, tokens, SSH private keys or
+    resolved Compose config into these records.
     """
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    actor_name = models.CharField(max_length=150, blank=True, default="")
     action = models.CharField(max_length=64)
     subject = models.CharField(max_length=128, blank=True)
     created = models.DateTimeField(auto_now_add=True)

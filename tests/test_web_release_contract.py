@@ -46,7 +46,7 @@ def test_installer_and_private_service_defaults():
 def test_no_javascript_frontend_framework():
     # Only small, locally hosted scripts are used: onboarding step handling
     # and dashboard-only SSH reachability. No frontend framework is present.
-    assert sorted(p.name for p in WEB.rglob('*.js')) == ['actions.js', 'activity.js', 'controller_health.js', 'dashboard.js', 'enroll.js', 'patch_manager.js', 'repair_ssh.js', 'server_sort.js', 'settings_accounts.js']
+    assert sorted(p.name for p in WEB.rglob('*.js')) == ['actions.js', 'activity.js', 'controller_health.js', 'dashboard.js', 'enroll.js', 'logo_preview.js', 'patch_manager.js', 'repair_ssh.js', 'server_sort.js']
     assert not list(WEB.rglob('package.json'))
     assert (WEB/'static/web/styles.css').exists()
     for name in ('login','dashboard','servers','host_detail','patch','review','history','settings'):

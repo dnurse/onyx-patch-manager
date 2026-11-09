@@ -4,7 +4,7 @@
 # lives here: it only gathers validated answers and renders native newt dialogs.
 # NEWT_COLORS uses 16 terminal colour names; navy/slate/teal are approximations.
 
-OPM_UI_VERSION="0.6.0"
+OPM_UI_VERSION="0.7.0"
 OPM_UI_BACKTITLE=" ONYX PATCH MANAGER  |  ${OPM_UI_VERSION}  |  INSTALLATION & MAINTENANCE "
 OPM_UI_WIDTH=76
 OPM_UI_TERM_ROWS=24

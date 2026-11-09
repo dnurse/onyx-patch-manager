@@ -1,4 +1,4 @@
-{% extends 'web/base.html' %}{% block breadcrumb %}Settings / Accounts / Create{% endblock %}{% block title %}Create New Account{% endblock %}
+{% extends 'web/base.html' %}{% block breadcrumb_parents %}<a href="{% url 'settings' %}">Settings</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> <a href="{% url 'settings' %}#accounts">Accounts</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Create{% endblock %}{% block title %}Create New Account{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">ACCOUNT MANAGEMENT</p><h1>Create New Account</h1><p class="subtle">Create a local OPM login and assign its permissions.</p></div><a href="{% url 'settings' %}" class="btn ghost">Back to Settings</a></div>
 <section class="surface account-security-surface">

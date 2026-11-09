@@ -1,0 +1,23 @@
+{% extends 'web/base.html' %}
+{% block breadcrumb_parents %}<a href="{% url 'patch_manager' %}">Patch Manager</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Refresh scans{% endblock %}
+{% block title %}Refresh scan before review{% endblock %}
+{% block body %}
+<div class="page-intro"><div><p class="eyebrow">PATCH REVIEW</p>
+<h1>{% if all_fresh %}Scans are ready{% else %}Refresh out-of-date scans{% endif %}</h1>
+<p class="subtle">Your {{ selected_count }} selected server{% if selected_count != 1 %}s{% endif %} and {% if mode == 'dry_run' %}Dry Run{% else %}Apply Updates{% endif %} mode have been kept. After scanning, OPM will automatically open the patch review.</p></div>
+<a class="btn ghost" href="{% url 'patch_manager' %}">Back to selection</a></div>
+<section class="surface form-panel patch-review-panel"><div class="surface-heading"><div><h2>{% if all_fresh %}Continue to review{% else %}Scan required{% endif %}</h2><p>Only selected servers requiring a refresh are listed. Scanning reads packages and containers; it will not install packages, pull images or restart containers.</p></div></div>
+<div class="form-stack">{% for host in hosts %}<div class="key-value"><span>{{ host.name }}</span><strong>{% if host.sudo_mode == 'password' %}{% if host.sudo_cached_seconds %}Sudo authorized ({{ host.sudo_cached_seconds }}s remaining){% else %}Sudo password required{% endif %}{% else %}Existing sudo policy{% endif %}</strong></div>{% empty %}<p class="muted">All selected scans are current.</p>{% endfor %}</div>
+<form method="post" action="{% url 'review_refresh' %}" class="form-stack" autocomplete="off">
+{% csrf_token %}
+{% if password_hosts %}
+<label for="review-shared-sudo">Sudo password (leave blank if already authorized)</label>
+<input id="review-shared-sudo" type="password" name="shared_sudo_password" autocomplete="off" placeholder="Enter once, or use individual passwords below">
+<details class="disclosure full-width-disclosure"><summary>Individual server passwords</summary><div class="disclosure-body"><p class="muted small">Provide a different password for any selected host that needs one.</p>
+{% for host in password_hosts %}<label for="review_sudo_{{ host.id }}">{{ host.name }}</label><input type="password" id="review_sudo_{{ host.id }}" name="sudo_{{ host.id }}" autocomplete="off">{% endfor %}
+</div></details>
+{% endif %}
+<div class="form-actions"><button class="btn ghost" type="submit" name="action" value="cancel">Cancel review</button>
+<button class="btn primary" type="submit" name="action" value="refresh" data-opm-loading="Refreshing selected scans">{% if all_fresh %}Continue to patch review{% else %}Scan and continue to review{% endif %}</button></div>
+</form></section>
+{% endblock %}

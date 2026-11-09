@@ -133,7 +133,7 @@ def test_all_v0520_versions_agree():
     import tomllib
     with (ROOT/'pyproject.toml').open('rb') as f:
         version = tomllib.load(f)['project']['version']
-    assert version == '0.6.0'  # current release; earlier v0.5.20 tests remain relevant
+    assert version == '0.7.0'  # internal candidate; earlier v0.5.20 tests remain relevant
     assert f'__version__ = "{version}"' in (ROOT/'src/opm/__init__.py').read_text()
     assert f'OPM_UI_VERSION="{version}"' in (ROOT/'OPMTUI.sh').read_text()
 

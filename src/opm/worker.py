@@ -19,11 +19,23 @@ from pathlib import Path
 
 from .config import Config
 from .controller import rpc
-from .inventory import ansible_inventory
+from .inventory import ansible_inventory, inventory_alias
 from .runtime import check_ansible_runtime, AnsibleDependencyError
 from .remote import RemoteError, inspect_os, inspect_host, ssh_command, test_connection
 from .store import Store
 from .validation import sanitize
+from .partial_apt import (PartialAptPlan, plan_verified_subset,
+                          cleanup_verified_subset, partial_upgrade_argv,
+                          installed_versions)
+
+
+class WorkerExecutionInterrupted(Exception):
+    """Ansible ended without completing or verifying the approved operation.
+
+    Unlike ordinary Ansible failures, a canceled Runner operation may have
+    partially changed remote packages. Preserve an interrupted outcome instead
+    of presenting it as a recoverable failed task or automatically replaying it.
+    """
 
 
 def _playbook(path: Path) -> None:
@@ -54,6 +66,27 @@ def _playbook(path: Path) -> None:
     path.write_text(json.dumps(play, indent=2), encoding="utf-8")
     path.chmod(0o600)
 
+
+
+def _partial_playbook(path: Path, plan: PartialAptPlan) -> None:
+    """A fixed APT command in an isolated, signed-index environment.
+
+    Only an already validated root-generated sandbox path is interpolated.
+    Ansible uses argv, never shell. Normal full-health patches continue to
+    use the existing apt module. No automatic new packages or removals.
+    """
+    play = [{
+        'name': 'Approved OS maintenance with partial repository availability',
+        'hosts': 'all', 'gather_facts': False, 'serial': 1,
+        'tasks': [{
+            'name': 'Upgrade verified packages from isolated APT indexes',
+            'become': True,
+            'environment': {'DEBIAN_FRONTEND': 'noninteractive', 'LC_ALL': 'C'},
+            'ansible.builtin.command': {'argv': partial_upgrade_argv(plan)},
+        }],
+    }]
+    path.write_text(json.dumps(play, indent=2), encoding='utf-8')
+    path.chmod(0o600)
 
 
 def _validation_playbook(path: Path) -> None:
@@ -157,7 +190,7 @@ def _validated_inventory_file(host: dict, inventory: dict, host_dir: Path,
     The same validated file is passed to Runner, preventing differences
     between preflight and patch execution inventory content.
     """
-    host_name = str(host["name"])
+    host_name = inventory_alias(host)
     groups = inventory.get("all") or {}
     host_mapping = groups.get("hosts")
     if not isinstance(host_mapping, dict) or set(host_mapping) != {host_name}:
@@ -211,8 +244,14 @@ def _validated_inventory_file(host: dict, inventory: dict, host_dir: Path,
     return path
 
 
-def _fresh_preflight(host: dict, target: dict, config: Config, sudo_password: str | None) -> None:
-    """Detect changes between approval and execution before any APT mutation."""
+def _fresh_preflight(host: dict, target: dict, config: Config,
+                     sudo_password: str | None) -> PartialAptPlan | None:
+    """Validate approved candidates; isolate verified indexes on repo failure.
+
+    The regular all-repositories path remains unchanged. A failed refresh
+    requires a *new*, initially empty APT index directory and an exact
+    approved subset; stale cached lists can never enter the fallback upgrade.
+    """
     if not host["verified"]:
         raise RemoteError("SSH verification was revoked")
     for field, approved_field in (("address", "address"), ("ssh_port", "port"),
@@ -238,13 +277,25 @@ def _fresh_preflight(host: dict, target: dict, config: Config, sudo_password: st
     # without a sudo password may have used cached metadata, so compare the
     # actual fresh candidates before modifying any installed package.
     update = ["apt-get", "update", "-o", "APT::Update::Error-Mode=any"]
-    if mode == "root":
-        ssh_command(host, config, update, timeout=120)
-    elif mode == "password":
-        ssh_command(host, config, ["sudo", "-k", "-S", "-p", "''", *update],
-                    sudo_password + "\n", timeout=120)
-    else:
-        ssh_command(host, config, ["sudo", "-n", *update], timeout=120)
+    try:
+        if mode == "root":
+            ssh_command(host, config, update, timeout=120)
+        elif mode == "password":
+            ssh_command(host, config, ["sudo", "-k", "-S", "-p", "''", *update],
+                        sudo_password + "\n", timeout=120)
+        else:
+            ssh_command(host, config, ["sudo", "-n", *update], timeout=120)
+    except RemoteError as original_error:
+        # A broken repository MUST NOT fall through to APT's cached lists.
+        # Partial fallback creates fresh isolated indexes and proves every
+        # transaction candidate was approved. Unsupported cases fail closed.
+        try:
+            return plan_verified_subset(host, config, sudo_password, target['packages'])
+        except Exception as subset_error:
+            raise RemoteError(
+                'APT metadata refresh failed, and a safe verified-only upgrade '
+                'could not be established: ' + sanitize(str(subset_error), 400)
+            ) from original_error
     current = inspect_os(host, config)
     if not current.get("package_query_ok", False):
         raise RemoteError(f"APT package query failed: {current.get('apt_error', '')}")
@@ -262,6 +313,51 @@ def _fresh_preflight(host: dict, target: dict, config: Config, sudo_password: st
                     sudo_password + "\n", timeout=120)
     else:
         ssh_command(host, config, ["sudo", "-n", *simulation], timeout=120)
+    return None
+
+
+def _partial_approved_outcome(store: Store, job_id: str, host_id: str,
+                              host: dict, config: Config, target: dict,
+                              partial: PartialAptPlan) -> str:
+    """Report actual installed package versions, not only Ansible's exit status."""
+    versions = installed_versions(host, config, target['packages'])
+    upgraded = []
+    unchanged = []
+    unexpected = []
+    intended = {p['name'] for p in partial.to_upgrade}
+    for package in target['packages']:
+        name = package['name']
+        current = versions.get(name)
+        if name in intended and current == package['candidate']:
+            # Only count explicitly selected packages as updated by OPM.
+            upgraded.append(name)
+        elif current == package['current']:
+            unchanged.append(name)
+        else:
+            # Even an excluded package that changed independently deserves
+            # investigation, not a false claim OPM upgraded it.
+            unexpected.append(name)
+    if unexpected:
+        raise RemoteError('Post-update package versions could not be verified for: ' +
+                          ', '.join(unexpected[:20]))
+    not_applied = sorted(name for name in intended if name not in upgraded)
+    if not_applied:
+        store.event(job_id, host_id, 'warning', 'Held or unchanged packages',
+                    'Selected but not upgraded: ' + ', '.join(not_applied[:70]))
+    if partial.excluded:
+        store.event(job_id, host_id, 'warning', 'Unverified repository candidates',
+                    'Not available from freshly verified indexes: ' +
+                    ', '.join(p['name'] for p in partial.excluded[:80]))
+    if partial.held:
+        store.event(job_id, host_id, 'warning', 'Dependency or APT hold',
+                    'Not selected by safe APT simulation: ' +
+                    ', '.join(p['name'] for p in partial.held[:80]))
+    store.event(job_id, host_id, 'success', 'Verified packages installed',
+                f'{len(upgraded)} approved package(s) are at their reviewed version: ' +
+                ', '.join(upgraded[:60]))
+    return (f'{len(upgraded)} at approved version; '
+            f'{len(partial.excluded)} unavailable from verified indexes; '
+            f'{len(partial.held)} held by APT; {len(not_applied)} selected but unchanged')
 
 
 def _refresh_host_after_patch(store: Store, job_id: str, host: dict,
@@ -333,6 +429,11 @@ def run_job(job_id: str, config: Config | None = None) -> None:
     if not plan["approved_at"] or plan["expires"] < __import__("time").time():
         store.job_state(job_id, "failed", "Approval missing or expired before execution")
         return
+    if (mode == 'apply' and
+        any(t.get('scan_metadata') == 'cached' for t in plan['snapshot']['targets']) and
+        not plan.get('repo_warning_ack')):
+        store.job_state(job_id, 'failed', 'Incomplete APT metadata requires explicit operator acknowledgement')
+        return
 
     # Lazy import keeps inventory and scanning usable even when the machine is
     # still missing the external Ansible runtime dependency.
@@ -373,6 +474,8 @@ def run_job(job_id: str, config: Config | None = None) -> None:
     store.job_state(job_id, "running")
     failed = 0
     completed = 0
+    warned = 0
+    warning_summaries: list[str] = []
     try:
         for target in plan["snapshot"]["targets"]:
             host_id = target["host_id"]
@@ -383,6 +486,9 @@ def run_job(job_id: str, config: Config | None = None) -> None:
             store.target_state(job_id, host_id, "running")
             host_dir = config.jobs / job_id / host_id
             host_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            partial: PartialAptPlan | None = None
+            sudo_password = sudo_passwords.get(host_id)
+            host = None
             try:
                 host = store.host(host_id)
                 inventory = ansible_inventory([host], str(config.known_hosts))
@@ -391,7 +497,6 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                 )
                 store.event(job_id, host_id, "info", "Inventory validation",
                             "Ansible parsed the inventory and resolved exactly one approved host")
-                sudo_password = sudo_passwords.get(host_id)
                 if mode == 'dry_run':
                     store.event(job_id, host_id, 'info', 'Dry-run preflight',
                                 'Checking SSH, sudo, package query and APT simulation')
@@ -405,9 +510,17 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                 else:
                     store.event(job_id, host_id, 'info', 'Preflight',
                                 'Checking SSH, sudo, packages and APT simulation')
-                    _fresh_preflight(host, target, config, sudo_password)
+                    partial = _fresh_preflight(host, target, config, sudo_password)
                     play_path = host_dir / 'approved_upgrade.json'
-                    _playbook(play_path)
+                    if partial:
+                        store.event(job_id, host_id, 'warning', 'Repository preflight',
+                                    partial.warning + '. Using isolated signed indexes; '
+                                    f'{len(partial.to_upgrade)} selected, '
+                                    f'{len(partial.excluded)} excluded, '
+                                    f'{len(partial.held)} held by APT')
+                        _partial_playbook(play_path, partial)
+                    else:
+                        _playbook(play_path)
 
                 # Runner manages Ansible task events. The job's snapshots live
                 # in a private directory. Remote modules are the only path to
@@ -415,7 +528,8 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                 execution = {"no_hosts": False, "upgrade_task_hosts": set(), "recap_hosts": set()}
                 expected_task = ('Validate privileged Ansible access in check mode'
                                  if mode == 'dry_run' else
-                                 'Upgrade installed packages without automatic removals')
+                                 ('Upgrade verified packages from isolated APT indexes'
+                                  if partial else 'Upgrade installed packages without automatic removals'))
 
                 def on_event(event: dict) -> bool:
                     event_type = event.get("event")
@@ -442,7 +556,15 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                     # events if a remote tool echoes an authentication value.
                     if sudo_password:
                         message = message.replace(sudo_password, "[REDACTED]")
-                    if message.strip() and (mode != 'dry_run' or
+                    if partial:
+                        # APT command stdout can contain private repo URLs.
+                        # Record bounded generic worker failures and the
+                        # separately verified package-level outcome instead.
+                        if event_type in ('runner_on_failed', 'runner_on_unreachable',
+                                          'playbook_on_no_hosts_matched'):
+                            store.event(job_id, host_id, 'error', 'APT execution',
+                                        'Verified-only APT task failed; check the host package state')
+                    elif message.strip() and (mode != 'dry_run' or
                         plan['snapshot'].get('verbose_dry_run', True) or
                         event_type in ('runner_on_failed', 'runner_on_unreachable',
                                        'playbook_on_no_hosts_matched')):
@@ -475,6 +597,15 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                              "ANSIBLE_RETRY_FILES_ENABLED": "False",
                              "ANSIBLE_NOCOLOR": "True"},
                 )
+                if runner.status in ('canceled', 'cancelled'):
+                    # A systemd stop can cancel the Ansible child while the
+                    # worker is still alive long enough to receive Runner's
+                    # result (often exit 254). This is an interrupted patch,
+                    # not a normal Ansible task failure. Never replay APT.
+                    raise WorkerExecutionInterrupted(
+                        'Ansible execution was canceled before completion; '
+                        'the remote package state must be checked before retrying'
+                    )
                 if runner.rc != 0 or runner.status != "successful":
                     # Exit 127 specifically denotes that a child command was
                     # missing. Give the operator an actionable diagnosis in
@@ -495,8 +626,8 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                 # Require both an actual approved APT task-success callback
                 # and a matching host in Ansible's final recap.
                 if (execution["no_hosts"] or
-                        host["name"] not in execution["upgrade_task_hosts"] or
-                        host["name"] not in execution["recap_hosts"]):
+                        inventory_alias(host) not in execution["upgrade_task_hosts"] or
+                        inventory_alias(host) not in execution["recap_hosts"]):
                     raise RemoteError(
                         ('Ansible did not validate the selected host in check mode'
                          if mode == 'dry_run' else
@@ -510,11 +641,20 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                     completed += 1
                     continue
                 store.target_state(job_id, host_id, "verifying")
+                summary = None
+                if partial:
+                    summary = _partial_approved_outcome(
+                        store, job_id, host_id, host, config, target, partial)
                 after = inspect_os(host, config)
                 if not after.get("package_query_ok"):
                     raise RemoteError("Post-patch APT package query failed; verification is incomplete")
                 reboot = bool(after.get("reboot_required", False))
-                store.target_state(job_id, host_id, "completed", reboot=reboot)
+                store.target_state(job_id, host_id,
+                                   "completed_with_warnings" if partial else "completed",
+                                   error=summary or '', reboot=reboot)
+                if partial:
+                    warned += 1
+                    warning_summaries.append(host['name'] + ': ' + str(summary))
                 store.event(job_id, host_id, "success", "Verification",
                             "SSH reachable; package query completed; " +
                             ("OS reboot is pending" if reboot else "no OS reboot flag detected"))
@@ -523,6 +663,14 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                 # failure is a distinct warning, not a false patch failure.
                 _refresh_host_after_patch(store, job_id, host, config, sudo_password)
                 completed += 1
+            except WorkerExecutionInterrupted as exc:
+                # This path is reached when Runner itself reports cancellation.
+                # An abrupt worker death is handled separately by the
+                # controller's systemd reconciliation. Both paths converge on
+                # the same atomic, idempotent job/target interruption state.
+                # If the controller reconciled first, do not overwrite it.
+                store.interrupt_job(job_id, sanitize(str(exc), 480))
+                return
             except Exception as exc:
                 # Do not auto-repeat a partially completed APT transaction.
                 failed += 1
@@ -532,12 +680,29 @@ def run_job(job_id: str, config: Config | None = None) -> None:
                     message = message.replace(secret, "[REDACTED]")
                 store.target_state(job_id, host_id, "failed", message)
                 store.event(job_id, host_id, "error", "Execution failed", message)
+                if partial and host:
+                    try:
+                        versions = installed_versions(host, config, target['packages'])
+                        changed = [p['name'] for p in target['packages']
+                                   if versions.get(p['name']) != p['current']]
+                        store.event(job_id, host_id, 'warning', 'After failure',
+                                    f'{len(changed)} package version(s) changed despite failure: ' +
+                                    ', '.join(changed[:70]))
+                    except Exception:
+                        store.event(job_id, host_id, 'warning', 'After failure',
+                                    'Remote package versions could not be reconciled')
+            finally:
+                if partial and host:
+                    cleanup_verified_subset(host, config, sudo_password, partial.directory)
         if failed and completed:
             store.job_state(job_id, "partially_completed")
         elif failed:
             store.job_state(job_id, "failed")
         elif store.job(job_id)["cancel_requested"]:
             store.job_state(job_id, "cancelled")
+        elif warned:
+            store.job_state(job_id, 'completed_with_warnings',
+                            sanitize('; '.join(warning_summaries), 1800))
         else:
             store.job_state(job_id, 'simulated' if mode == 'dry_run' else 'completed')
     except BaseException as exc:

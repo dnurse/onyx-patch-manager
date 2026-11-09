@@ -1,16 +1,16 @@
-{% extends 'web/base.html' %}{% load static %}{% block extra_head %}<script defer src="{% static 'web/settings_accounts.js' %}"></script>{% endblock %}{% block breadcrumb %}Settings
+{% extends 'web/base.html' %}{% block breadcrumb %}Settings
 {% endblock %}{% block title %}Settings
 {% endblock %}
 {% block body %}
-<div class="page-intro">
-  <div>
-    <p class="eyebrow">ACCESS AND CONFIGURATION</p>
+<div class="page-intro settings-intro">
+  <p class="eyebrow">ACCESS AND CONFIGURATION</p>
+  <div class="settings-title-row">
     <h1>Settings</h1>
-    <p class="subtle">User accounts are stored alongside OPM data in SQLite.</p>
+    <span class="settings-version">v{{ opm_version }}</span>
   </div>
 </div>
 <section class="surface settings-master settings-overview-grid">
-  <div class="settings-section">
+  <div class="settings-section" id="accounts">
     <div class="surface-heading accounts-section-heading"><div><h2>Accounts</h2><p>Create accounts, edit roles and reset passwords</p></div>
       {% if request.user.is_superuser %}<a class="btn primary account-create-trigger" href="{% url 'create_account' %}">Create New Account</a>{% endif %}
     </div>
@@ -27,17 +27,9 @@
               <a class="btn secondary account-edit-btn" href="{% url 'change_password' %}">Edit password</a>
             {% else %}
               <a class="btn secondary account-edit-btn" href="{% url 'edit_account' a.pk %}">Edit</a>
-              {% if a.is_active %}<button type="button" class="btn danger-btn account-disable-trigger" data-account-disable-toggle="disable-panel-{{ a.pk }}" aria-controls="disable-panel-{{ a.pk }}" aria-expanded="false">Disable</button>{% endif %}
             {% endif %}
           </div>
         </div>
-        {% if a.pk != request.user.pk and a.is_active %}
-          <form id="disable-panel-{{ a.pk }}" method="post" action="{% url 'disable_account' a.pk %}" class="form-stack account-disable-confirm" hidden>
-            {% csrf_token %}<p>Disable <strong>{{ a.username }}</strong>? This immediately blocks future sign-ins. Enter DISABLE to confirm.</p>
-            <label for="disable-{{ a.pk }}">Confirmation</label><input id="disable-{{ a.pk }}" name="confirm" autocomplete="off" required pattern="DISABLE" placeholder="DISABLE">
-            <div class="form-actions"><button type="button" class="btn ghost" data-cancel-disable="disable-panel-{{ a.pk }}">Cancel</button><button type="submit" class="btn danger-btn">Confirm disable</button></div>
-          </form>
-        {% endif %}
       {% endfor %}
       </div>
     {% else %}

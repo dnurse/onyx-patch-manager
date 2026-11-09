@@ -1,6 +1,16 @@
-{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Sign in | Onyx Patch Manager</title><link rel="stylesheet" href="{% static 'web/styles.css' %}"></head>
+{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Sign in | Onyx Patch Manager</title>
+<link rel="icon" href="{% static 'web/branding/favicon.ico' %}" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'web/branding/shield-o-32.png' %}">
+<link rel="icon" type="image/svg+xml" href="{% static 'web/branding/shield-o.svg' %}">
+<link rel="apple-touch-icon" sizes="180x180" href="{% static 'web/branding/shield-o-180.png' %}">
+<link rel="stylesheet" href="{% static 'web/styles.css' %}"></head>
 <body class="login-page"><main class="login-card">
-<div class="login-mark">O</div><p class="eyebrow">PRIVATE MANAGEMENT CONSOLE</p><h1>Onyx Patch Manager</h1><p class="subtle">Sign in to access your infrastructure dashboard.</p>
+<header class="login-brand">
+  <p class="eyebrow">PRIVATE MANAGEMENT CONSOLE</p>
+  <div class="login-mark"><img src="{% static 'web/branding/shield-o.svg' %}" width="51" height="51" alt=""></div>
+  <h1>Onyx Patch <span class="login-title-end">Manager <small class="login-version">v{{ opm_version }}</small></span></h1>
+  <p class="subtle">Sign in to access your infrastructure dashboard.</p>
+</header>
 {% if messages %}{% for message in messages %}<div class="flash error">{{ message }}</div>{% endfor %}{% endif %}
 <form method="post" class="form-stack">{% csrf_token %}
 <label for="username">Username</label><input id="username" name="username" autocomplete="username" required autofocus maxlength="150">

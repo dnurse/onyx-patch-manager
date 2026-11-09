@@ -16,7 +16,7 @@ def test_approved_password_run_uses_pexpect_without_saving_password(repo, host_d
     store.finish_scan(scan_id, {"os": {"family": "debian", "metadata": "cached",
                                        "package_query_ok": True, "packages": approved_packages}})
     plan = store.create_plan([host["id"]])
-    store.approve_plan(plan["id"], "opm", False, "PATCH")
+    store.approve_plan(plan["id"], "opm", False, repo_warning_ack=True)
     job = store.create_job(plan["id"], "fake-run")
     password = "WORKER-SECRET-123456"
 

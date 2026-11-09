@@ -1,8 +1,8 @@
-{% extends 'web/base.html' %}{% block breadcrumb %}Settings / Edit account{% endblock %}{% block title %}Edit {{ account.username }}{% endblock %}
+{% extends 'web/base.html' %}{% block breadcrumb_parents %}<a href="{% url 'settings' %}">Settings</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> <a href="{% url 'settings' %}#accounts">Accounts</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Edit account{% endblock %}{% block title %}Edit {{ account.username }}{% endblock %}
 {% block body %}
-<div class="page-intro"><div><p class="eyebrow">ACCOUNT MANAGEMENT</p><h1>Edit {{ account.username }}</h1><p class="subtle">Change this account's role or reset its password. Leave the password fields blank to keep the existing password.</p></div></div>
+<div class="page-intro"><div><p class="eyebrow">ACCOUNT MANAGEMENT</p><h1>Edit {{ account.username }}</h1><p class="subtle">Manage account access, role and password. Leave password fields blank to keep the existing password.</p></div></div>
 <section class="surface account-edit-surface">
-  <div class="surface-heading"><div><h2>Account settings</h2><p>Current role: {{ role_name|title }}{% if not account.is_active %} · Disabled account{% endif %}</p></div></div>
+  <div class="surface-heading"><div><h2>Account settings</h2><p>Current role: {{ role_name|title }} · {% if account.is_active %}Enabled{% else %}Disabled{% endif %}</p></div></div>
   <form method="post" class="form-stack">
     {% csrf_token %}
     {% if form.non_field_errors %}<div class="form-error">{{ form.non_field_errors }}</div>{% endif %}
@@ -18,6 +18,32 @@
     {% if form.confirm_password.errors %}<div class="form-error">{{ form.confirm_password.errors }}</div>{% endif %}
     <p class="muted small">Password resets invalidate the user's existing login sessions. Role changes apply on their next request.</p>
     <div class="form-actions"><a class="btn ghost" href="{% url 'settings' %}">Cancel</a><button class="btn primary" type="submit">Save account changes</button></div>
+  </form>
+</section>
+<section class="surface account-edit-surface account-access-surface">
+  <div class="surface-heading"><div><h2>Account access</h2><p>Enable or disable this account's ability to sign in.</p></div>
+    <span class="status {% if account.is_active %}ok{% else %}danger{% endif %}">{% if account.is_active %}Enabled{% else %}Disabled{% endif %}</span>
+  </div>
+  {% if account.is_active %}
+    <form method="post" action="{% url 'account_status' account.pk %}" class="form-stack" autocomplete="off">
+      {% csrf_token %}<input type="hidden" name="action" value="disable">
+      <label class="checkline account-option" for="account-disable-ack"><input id="account-disable-ack" type="checkbox" name="confirm_disable" value="yes" required><span>I understand this will block the account from signing in and invalidate its existing sessions.</span></label>
+      <div class="form-actions"><button class="btn danger-btn" type="submit">Disable account</button></div>
+    </form>
+  {% else %}
+    <form method="post" action="{% url 'account_status' account.pk %}" class="form-stack">
+      {% csrf_token %}<input type="hidden" name="action" value="enable">
+      <p class="muted small">Re-enabling restores sign-in using the account's existing password. You can reset that password above if needed.</p>
+      <div class="form-actions"><button class="btn primary" type="submit">Enable account</button></div>
+    </form>
+  {% endif %}
+</section>
+<section class="surface account-edit-surface account-delete-surface">
+  <div class="surface-heading"><div><h2>Delete account</h2><p>Permanently remove this login. Existing patch and audit History is retained.</p></div></div>
+  <form method="post" action="{% url 'delete_account' account.pk %}" class="form-stack" autocomplete="off">
+    {% csrf_token %}
+    <label class="checkline account-option" for="delete-account-confirm"><input id="delete-account-confirm" type="checkbox" name="confirm_delete" value="yes" required><span>I understand this will permanently delete the <strong>{{ account.username }}</strong> account and revoke its access. This cannot be undone.</span></label>
+    <div class="form-actions"><button class="btn danger-btn" type="submit">Delete account permanently</button></div>
   </form>
 </section>
 {% endblock %}

@@ -13,12 +13,12 @@
       <button type="submit" class="btn secondary">Apply</button>
     </form>
   </div>
-  <div class="table-scroll"><table class="data-table history-table">
+  <div class="table-scroll history-scroll" role="region" aria-label="All history records" tabindex="0"><table class="data-table history-table">
     <thead><tr><th>Type</th><th>Operation</th><th>Status</th><th>Created</th><th>Details / diagnostic log</th><th></th></tr></thead>
     <tbody>{% for item in items %}
       <tr><td data-label="Type"><span class="status neutral">{% if item.type == 'patch' %}Patch{% elif item.type == 'audit' %}Audit{% else %}Activity{% endif %}</span></td>
         <td data-label="Operation"><strong>{{ item.label }}</strong>{% if item.type == 'activity' %}<small class="history-kind">{{ item.kind|title }}</small>{% elif item.type == 'audit' %}<small class="history-kind">By {{ item.actor }}</small>{% endif %}</td>
-        <td data-label="Status"><span class="status {% if item.state == 'completed' or item.state == 'simulated' %}ok{% elif item.state == 'failed' or item.state == 'interrupted' or item.state == 'partial' or item.state == 'partially_completed' %}danger{% else %}neutral{% endif %}">{{ item.state|title }}</span></td>
+        <td data-label="Status"><span class="status {% if item.state == 'completed' or item.state == 'simulated' %}ok{% elif item.state == 'completed_with_warnings' %}warn{% elif item.state == 'failed' or item.state == 'interrupted' or item.state == 'partial' or item.state == 'partially_completed' %}danger{% else %}neutral{% endif %}">{{ item.state|job_state_label }}</span></td>
         <td data-label="Created">{{ item.created|scan_time }}</td>
         <td data-label="Details / diagnostic log" class="history-detail-cell">
           {% if item.events or item.detail %}
@@ -41,14 +41,14 @@
   <div class="surface-heading"><div><h2>History maintenance</h2><p>Manage old records without changing managed servers or scan findings.</p></div></div>
   <div class="history-actions compact-cards">
     <form method="post" action="{% url 'dismiss_alerts' %}" class="history-card">
-      {% csrf_token %}<div><p class="muted small">Dismiss old failure notifications. Patch records and errors remain available for review.</p></div>
-      <div class="history-card-footer end-only"><button class="btn secondary" type="submit">Acknowledge past failures</button></div>
+      {% csrf_token %}<div><p class="muted small">Clear failure and warning alerts from the Activity indicator. All history records remain available.</p></div>
+      <div class="history-card-footer end-only"><button class="btn secondary" type="submit">Clear alerts</button></div>
     </form>
-    <form method="post" action="{% url 'clear_history' %}" class="history-card" data-opm-loading="Clearing patch history">
-      {% csrf_token %}<div><p class="muted small">Permanently delete completed patch job records and their task logs. Other activity and security audit history is preserved.</p></div>
+    <form method="post" action="{% url 'clear_history' %}" class="history-card" data-opm-loading="Clearing all history">
+      {% csrf_token %}<div><p class="muted small">Permanently delete all patch jobs, task logs, background activities, SSH repair history and security audit records. Server inventory, scan findings and accounts remain intact. This cannot be undone.</p></div>
       <div class="history-card-footer split-row">
-        <label class="confirm-inline"><input type="checkbox" name="confirm_clear" value="yes" required><span>I understand patch job history will be deleted.</span></label>
-        <button class="btn danger-button" type="submit">Clear patch history</button>
+        <label class="confirm-inline"><input type="checkbox" name="confirm_clear" value="yes" required><span>I understand all history, including security audits, will be deleted permanently.</span></label>
+        <button class="btn danger-button" type="submit">Clear all history</button>
       </div>
     </form>
   </div>

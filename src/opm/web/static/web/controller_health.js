@@ -10,7 +10,7 @@
   function render(ready) {
     indicator.classList.toggle('good', ready);
     indicator.classList.toggle('bad', !ready);
-    const label = `Local controller ${ready ? 'online' : 'offline'}`;
+    const label = `OPM Controller ${ready ? 'online' : 'offline'}`;
     indicator.setAttribute('aria-label', label);
     indicator.title = label;
   }

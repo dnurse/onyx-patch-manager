@@ -1,26 +1,30 @@
 {% extends 'web/base.html' %}{% load opm_display %}
-{% block breadcrumb %}History / {{ job.id|short_id }}{% endblock %}
+{% block breadcrumb_parents %}<a href="{% url 'history' %}">History</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}{{ job.id|short_id }}{% endblock %}
 {% block title %}Patch job{% endblock %}
 {% block body %}
 {% if job.mode == 'dry_run' %}<p class="footnote">Dry Run simulation. No packages were installed by OPM. A successful simulation does not guarantee a future live update will succeed.</p>{% endif %}
 <div class="page-intro"><div><p class="eyebrow">EXECUTION DETAIL</p>
   <h1>{% if job.mode == 'dry_run' %}Dry run{% else %}Patch job{% endif %} {{ job.id|short_id }}</h1>
-  <p class="subtle">State: <span class="status {% if job.state == 'completed' or job.state == 'simulated' %}ok{% elif job.state == 'failed' %}danger{% else %}neutral{% endif %}">{% if job.state == 'simulated' %}Simulated{% else %}{{ job.state|title }}{% endif %}</span> · Created {{ job.created|scan_time }}</p></div>
+  <p class="subtle">State: <span class="status {% if job.state == 'completed' or job.state == 'simulated' %}ok{% elif job.state == 'failed' or job.state == 'interrupted' or job.state == 'partially_completed' %}danger{% elif job.state == 'completed_with_warnings' %}warn{% else %}neutral{% endif %}">{{ job.state|job_state_label }}</span> · Created {{ job.created|scan_time }}</p></div>
   <a class="btn ghost" href="{% url 'history' %}">Back to history</a>
 </div>
 <div class="detail-grid">
   <section class="surface"><div class="surface-heading"><div><h2>Targets</h2><p>Per-server execution state</p></div></div>
-    {% for t in job.targets %}<div class="key-value"><span class="monospace">{{ t.name }}</span>
-      <span class="status {% if t.state == 'completed' or t.state == 'simulated' %}ok{% elif t.state == 'failed' %}danger{% else %}neutral{% endif %}">{{ t.state|title }}</span></div>
+    {% for t in job.targets %}<div class="job-target-result"><div class="key-value"><span class="monospace">{{ t.name }}</span>
+      <span class="status {% if t.state == 'completed' or t.state == 'simulated' %}ok{% elif t.state == 'failed' or t.state == 'interrupted' %}danger{% elif t.state == 'completed_with_warnings' %}warn{% else %}neutral{% endif %}">{{ t.state|job_state_label }}</span></div>
+      {% if t.error %}<p class="job-target-diagnostic">{{ t.error }}</p>{% endif %}</div>
     {% empty %}<p class="muted">No targets found.</p>{% endfor %}
   </section>
   <section class="surface"><div class="surface-heading"><div><h2>Job control</h2>
     <p>Cancellation is cooperative and may not interrupt an active package operation</p></div></div>
-    {% if job.error %}<div class="warning-banner"><strong>Reported error</strong><p>{{ job.error }}</p></div>{% endif %}
+    {% if job.error %}<div class="warning-banner"><strong>{% if job.state == 'completed_with_warnings' %}Completed with warnings{% elif job.state == 'interrupted' %}Worker interrupted — manual review required{% else %}Reported error{% endif %}</strong><p>{{ job.error }}</p></div>{% endif %}
+    {% if job.state == 'interrupted' %}<div class="job-recovery-advice">
+      <strong>Before retrying</strong>
+      <p>OPM will not automatically restart this job. Inspect each interrupted host for incomplete package operations. On the managed host, run <code>sudo dpkg --audit</code> and <code>sudo apt-get check</code>, review installed package versions, then run a fresh scan and explicitly approve a new patch plan. A target marked Not started was not reached by this worker.</p>
+    </div>{% endif %}
     {% if request.user.is_staff and job.state == 'queued' or request.user.is_staff and job.state == 'running' %}
       <form method="post" action="{% url 'cancel_job' job.id %}" class="form-stack" data-opm-loading="Requesting safe cancellation">
-        {% csrf_token %}<label for="cancel">Type CANCEL</label>
-        <input name="confirm" id="cancel" required pattern="CANCEL" placeholder="CANCEL">
+        {% csrf_token %}<label class="checkline account-option" for="cancel"><input name="confirm_cancel" type="checkbox" value="yes" id="cancel" required><span>I understand cancellation may not interrupt an active package operation.</span></label>
         <button class="btn danger-btn" type="submit">Request safe cancellation</button>
       </form>
     {% else %}<p class="muted">Job is not currently running.</p>{% endif %}

@@ -1,5 +1,5 @@
 {% extends 'web/base.html' %}{% load opm_display %}
-{% block breadcrumb %}Activity / {{ item.kind|title }}{% endblock %}
+{% block breadcrumb_parents %}<a href="{% url 'history' %}">History</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}{{ item.kind|title }}{% endblock %}
 {% block title %}Background activity{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">BACKGROUND OPERATION</p>

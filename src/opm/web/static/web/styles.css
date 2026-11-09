@@ -124,15 +124,17 @@ h3 {
 .brand-symbol,.login-mark {
     width:38px;
     height:38px;
+    flex:0 0 38px;
     display:grid;
     place-items:center;
-    border:1px solid #4a9982;
-    border-radius:11px;
-    background:linear-gradient(145deg,#2c6758,#17372f);
-    color:#c6ffea;
-    font-weight:800;
-    font-size:22px
 }
+.brand-symbol img,.login-mark img {
+    display:block;
+    width:100%;
+    height:100%;
+    object-fit:contain;
+}
+.brand:focus-visible .brand-symbol { outline:2px solid var(--teal); outline-offset:3px; border-radius:8px; }
 
 .brand strong {
     display:block;
@@ -291,8 +293,17 @@ h3 {
     font-weight:600
 }
 
-.topbar-title span {
-    padding:0 10px;
+.topbar-title a {
+    color:inherit;
+    text-decoration:none
+}
+
+.topbar-title a:hover,.topbar-title a:focus-visible {
+    color:var(--teal)
+}
+
+.breadcrumb-separator {
+    padding:0 .35em;
     color:#527280
 }
 
@@ -335,6 +346,23 @@ h3 {
 .page-intro .subtle {
     margin:0;
     font-size:13px
+}
+
+.settings-intro {
+    display:block
+}
+
+.settings-title-row {
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:12px
+}
+
+.settings-version {
+    color:var(--muted);
+    font-size:.75rem;
+    white-space:nowrap
 }
 
 .intro-actions {
@@ -1138,15 +1166,45 @@ input::placeholder {
     box-shadow:0 32px 90px #0007
 }
 
-.login-mark {
-    width:51px;
-    height:51px;
-    font-size:29px;
-    margin-bottom:24px
+.login-brand {
+    --login-logo-size:51px;
+    display:grid;
+    grid-template-columns:var(--login-logo-size) minmax(0,1fr);
+    grid-template-areas:
+        ". eyebrow"
+        "logo title"
+        ". subtitle";
+    align-items:center;
+    gap:4px 14px
 }
 
-.login-card h1 {
+.login-mark {
+    grid-area:logo;
+    width:var(--login-logo-size);
+    height:var(--login-logo-size)
+}
+
+.login-brand h1 {
+    grid-area:title;
+    margin:0;
     font-size:26px
+}
+
+.login-title-end {
+    white-space:nowrap
+}
+
+.login-version {
+    margin-inline-start:3px;
+    color:var(--muted);
+    font-size:.54em;
+    font-weight:500;
+    letter-spacing:0
+}
+
+.login-brand .subtle {
+    grid-area:subtitle;
+    margin:0
 }
 
 .login-card .form-stack {
@@ -1168,8 +1226,9 @@ input::placeholder {
     margin-top:15px
 }
 
-.login-card .eyebrow {
-    margin-bottom:10px
+.login-brand .eyebrow {
+    grid-area:eyebrow;
+    margin:0
 }
 
 @media(max-width:1250px) {
@@ -1397,7 +1456,16 @@ input::placeholder {
     }
 
     .login-card {
-        padding:27px
+        padding:22px
+    }
+
+    .login-brand {
+        --login-logo-size:42px;
+        column-gap:12px
+    }
+
+    .login-brand h1 {
+        font-size:clamp(20px,5.6vw,26px)
     }
 
     .button-grid {
@@ -2275,12 +2343,7 @@ input::placeholder {
 }
 .accounts-section-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
 .accounts-section-heading .account-create-trigger { flex: none; }
-.account-disable-confirm[hidden] { display:none!important; }
 .account-list { padding-bottom:16px!important; }
-.account-disable-confirm { margin: 0 0 12px 0; padding:14px 16px; background:var(--panel2);
-    border:1px solid #846456; border-radius:9px; max-width:640px; }
-.account-disable-confirm input { max-width:400px; }
-.account-disable-trigger { font-size:12px; white-space:nowrap; }
 .account-edit-surface, .account-security-surface { width:100%; max-width:none; }
 .account-edit-surface > .form-stack, .account-security-surface > .form-stack {
     max-width:680px; padding:22px var(--surface-inset);
@@ -2290,14 +2353,6 @@ input::placeholder {
 .enroll-protected-option input[type=checkbox] { width:18px; height:18px; flex:none; accent-color:var(--teal); margin:2px 0 0; }
 .enroll-protected-option strong, .enroll-protected-option small { display:block; }
 .enroll-protected-option small { font-size:12px; font-weight:400; color:var(--muted); margin-top:3px; }
-/* v0.5.23: protected hosts use one white padlock INSTEAD of the server glyph. */
-.machine-icon.is-protected { position:relative; color:#f5f8fb; }
-.machine-icon.is-protected::before { content:""; position:absolute; width:12px; height:12px;
-    left:9px; top:5px; border:2px solid #f5f8fb; border-bottom:0;
-    border-radius:8px 8px 0 0; box-sizing:border-box; }
-.machine-icon.is-protected::after { content:""; position:absolute; width:18px; height:13px;
-    left:6px; bottom:6px; background:#f5f8fb; border:1px solid #f5f8fb;
-    border-radius:3px; box-sizing:border-box; }
 @media(max-width:680px){
   .accounts-section-heading .account-create-trigger { width:100%; }
   .account-controls { justify-content:flex-start; }
@@ -2329,8 +2384,6 @@ input::placeholder {
 .scan-auth-panel > form.form-stack {
     max-width:none; width:100%; min-width:0; box-sizing:border-box;
 }
-.account-disable-confirm { max-width:none; width:100%; box-sizing:border-box; }
-.account-disable-confirm input:not([type=checkbox]) { max-width:none; width:100%; }
 .ssh-repair-form input:not([type=checkbox]):not([type=hidden]),
 .ssh-repair-form select, .account-security-surface form.form-stack input:not([type=checkbox]):not([type=hidden]),
 .account-security-surface form.form-stack select,
@@ -2346,4 +2399,295 @@ input::placeholder {
   .account-edit-surface > form.form-stack,
   .account-security-surface > form.form-stack { padding:16px var(--surface-inset); }
   .ssh-repair-form .form-actions { flex-wrap:wrap; }
+}
+
+/* v0.6.1: read-only Docker Compose candidate inventory. */
+.compose-project-row { padding: 15px var(--surface-inset, 22px); border-top: 1px solid #324954; }
+.compose-project-heading { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.compose-project-heading strong { overflow-wrap:anywhere; }
+.compose-service-row { display:flex; justify-content:space-between; gap:14px; border-top:1px solid #304650; padding:9px 0; font-size:12px; flex-wrap:wrap; }
+.compose-service-row small { color:var(--muted); }
+.compose-patch-summary { margin:8px 20px; padding:14px 18px; border:1px solid #39545e; border-radius:10px; }
+.compose-patch-summary p { margin:8px 0 0; }
+@media(max-width:680px) { .compose-project-heading { align-items:flex-start; } .compose-project-row { padding:13px 16px; } .compose-patch-summary { margin:8px 10px; } }
+
+/* v0.6.3: Patch review has one consistent horizontal content inset.
+   The outer panel must not add another 26px before the heading, host rows,
+   warning cards, and approval form apply their own padding. Most importantly,
+   the protected-host warning lives INSIDE the form and must not get a second
+   22px margin that makes it narrower than the password input. */
+.patch-review-panel {
+    --review-inset: clamp(18px, 2vw, 28px);
+    max-width: none;
+    min-width: 0;
+    width: 100%;
+    padding: 0;
+}
+.patch-review-panel > .surface-heading,
+.patch-review-panel > .review-host {
+    padding-left: var(--review-inset);
+    padding-right: var(--review-inset);
+}
+.patch-review-panel > .warning-banner {
+    margin: 20px var(--review-inset);
+    width: auto;
+}
+.surface.patch-review-panel > form.form-stack {
+    padding: 20px var(--review-inset) 24px;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+}
+.patch-review-panel > form.form-stack > .warning-banner {
+    margin: 20px 0 6px;
+    width: 100%;
+}
+.patch-review-panel > form.form-stack > input[type=password] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+}
+.patch-review-panel > form.form-stack > .form-actions {
+    padding-top: 18px;
+}
+@media (max-width: 680px) {
+    .patch-review-panel { --review-inset: 16px; }
+    .patch-review-panel > .surface-heading { flex-wrap: wrap; }
+    .patch-review-panel > form.form-stack > .form-actions { flex-wrap: wrap; }
+}
+
+/* v0.6.4: Consistent card content geometry across authorization and account
+   management. The disclosure width is the form width, not form minus 44px.
+   Keep compact sign-in, filters and intentional nested cards unaffected. */
+.surface.form-panel > form.form-stack,
+.surface.form-panel > .form-stack,
+.surface.account-edit-surface > form.form-stack,
+.surface.account-security-surface > form.form-stack {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+}
+.form-stack > .full-width-disclosure {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    margin: 16px 0;
+}
+.form-stack > .full-width-disclosure > .disclosure-body {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+}
+.form-stack > .full-width-disclosure input:not([type=checkbox]):not([type=radio]):not([type=hidden]),
+.form-stack > .full-width-disclosure select {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+}
+.surface.form-panel > form.form-stack > .form-actions,
+.account-edit-surface > form.form-stack > .form-actions,
+.account-security-surface > form.form-stack > .form-actions {
+    box-sizing: border-box;
+    width: 100%;
+}
+.account-edit-surface.account-access-surface,
+.account-edit-surface.account-delete-surface { margin-top: 18px; }
+.account-access-surface .account-option { align-items: flex-start; }
+.account-delete-surface .account-option { align-items: flex-start; }
+@media (max-width: 680px) {
+    .form-stack > .full-width-disclosure { margin: 12px 0; }
+    .account-edit-surface .form-actions { flex-wrap: wrap; }
+}
+
+/* v0.6.6: full-width, self-contained Compose verification controls. */
+.compose-verification-form {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:end;
+    column-gap:12px;
+    row-gap:6px;
+    width:100%;
+    margin:16px 0 2px;
+}
+.compose-verification-form label { grid-column:1/-1; font-size:12px; color:var(--muted); }
+.compose-verification-form input { min-width:0; width:100%; box-sizing:border-box; }
+.compose-verification-form .btn { white-space:nowrap; }
+@media(max-width:680px) {
+    .compose-verification-form { grid-template-columns:minmax(0,1fr); }
+    .compose-verification-form .btn { width:100%; }
+}
+
+
+/* v0.6.7 — unified server identity and protected badge. */
+.server-logo {
+  --server-logo-size: 40px;
+  position: relative;
+  isolation: isolate;
+  display: inline-grid;
+  place-items: center;
+  width: var(--server-logo-size);
+  height: var(--server-logo-size);
+  min-width: var(--server-logo-size);
+  flex: 0 0 var(--server-logo-size);
+  box-sizing: border-box;
+  border: 1px solid #45646d;
+  border-radius: 30%;
+  background: #263b45;
+  overflow: visible;
+  vertical-align: middle;
+}
+.server-logo img {
+  width: 72%;
+  height: 72%;
+  max-width: 72%;
+  max-height: 72%;
+  display: block;
+  object-fit: contain;
+  border-radius: 10%;
+  filter: none;
+}
+/* Protected badge: white padlock overlay with no enclosing circle. */
+.server-logo-lock {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
+}
+.server-logo-lock svg { width: 14px; height: 14px; display: block; }
+.server-logo-large { --server-logo-size: 72px; border-radius: 30%; }
+.server-logo-large .server-logo-lock {
+  width: 18px; height: 18px; right: -3px; bottom: -3px;
+}
+.server-logo-large .server-logo-lock svg { width: 18px; height: 18px; }
+.host-overview-heading { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.host-overview-heading > div { min-width: 0; }
+.form-help { display:block; color:var(--muted); font-size:12px; margin-top:6px; }
+@media (max-width: 680px) {
+  .host-overview-heading { gap: 12px; }
+  .server-logo-large { --server-logo-size: 72px; }
+}
+
+
+/* v0.6.7 approved Compose image update controls: align with verification forms. */
+.compose-update-form {
+  width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+  margin-top: 16px; padding: 16px;
+  border: 1px solid var(--line, #344955); border-radius: 12px;
+}
+.compose-update-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.compose-update-field { display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+.compose-update-field input, .compose-update-field select {
+  display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+}
+.compose-update-ack { max-width: 100%; margin: 14px 0; align-items: flex-start; }
+.compose-update-form .btn { margin-top: 8px; }
+@media (max-width: 690px) {
+  .compose-update-grid { grid-template-columns: minmax(0,1fr); }
+  .compose-update-form { padding: 12px; }
+}
+
+/* v0.6.9 — server branding selector preview uses the same squircle system. */
+.server-logo-preview {
+  display: flex; align-items: center; gap: 18px;
+  width: 100%; min-width: 0; padding: 16px;
+  box-sizing: border-box;
+  border: 1px solid var(--border, #395563);
+  border-radius: 12px;
+  background: #15232c;
+}
+.server-logo-preview > div:last-child { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.server-logo-preview .form-help { margin: 5px 0 0; }
+@media (max-width: 680px) { .server-logo-preview { gap: 12px; padding: 12px; } }
+
+/* v0.6.13: recovery details preserve the same horizontal inset as target rows. */
+.job-target-result .key-value { border-bottom: 0; }
+.job-target-result + .job-target-result { border-top: 1px solid #2b414a; }
+.job-target-diagnostic { margin: 0; padding: 0 22px 15px; color: #e3bf91; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.job-recovery-advice { margin: 18px 22px; padding: 14px 16px; border: 1px solid #4b6670; background: #162630; border-radius: 9px; font-size: 12px; line-height: 1.6; }
+.job-recovery-advice p { margin: 6px 0 0; color: #b9d1d9; }
+.job-recovery-advice code { overflow-wrap: anywhere; }
+
+/* v0.6.15: bounded content rather than pages growing with activity. */
+.history-scroll {
+  max-height: clamp(360px, 68vh, 760px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #49636c #172832;
+  scrollbar-width: thin;
+}
+.history-scroll .history-table { width: 100%; }
+.history-scroll .history-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #1b2e38;
+}
+.dashboard-layout { align-items: stretch; }
+.dashboard-layout > .surface {
+  height: clamp(360px, 62vh, 660px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-layout > .surface > .surface-heading { flex: none; }
+.dashboard-layout .server-table-surface > .table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #49636c #172832;
+  scrollbar-width: thin;
+}
+.dashboard-layout .side-panel > .activity-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #49636c #172832;
+  scrollbar-width: thin;
+}
+.dashboard-layout .side-panel > .panel-bottom-link { flex: none; }
+.activity-dropdown-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #304753;
+  padding: 10px 15px;
+  background: #172832;
+}
+.activity-dropdown-actions form { margin: 0; }
+.activity-dropdown-actions .activity-dropdown-footer { border: 0; padding: 8px; }
+.activity-clear-alerts {
+  border: 1px solid #47646d;
+  border-radius: 8px;
+  padding: 8px 11px;
+  background: #263d47;
+  color: #dcefea;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.activity-clear-alerts:hover { background:#34535c; border-color:#83baac; }
+@media (max-width: 700px) {
+  .dashboard-layout > .surface { height: clamp(340px, 58vh, 540px); }
+  .history-scroll { max-height: min(65vh, 580px); }
 }

@@ -1,10 +1,182 @@
+## v0.7.0 — Nightly
+
+- Add bulk CSV server inventory import and export, with preview and Checkmk column support.
+- Include the internal updates since v0.6.0, covering Compose workflows, job recovery, and interface improvements.
+
+## v0.6.21 — Server inventory CSV (internal)
+
+- Add administrator CSV import with preview, Checkmk column support and duplicate detection.
+- Export server inventory fields and keep imported profiles pending SSH setup.
+
+## v0.6.20 — Breadcrumb links and signed build revisions (internal)
+
+- Link the header breadcrumbs to parent pages and the Dashboard.
+- Allow the existing signed deployment command to install newer build revisions without changing the application version.
+
+## v0.6.19 — Sign-in title alignment (internal)
+
+- Center the left-aligned shield on the title and display the running version in small text beside Manager.
+
+## v0.6.18 — Sign-in header layout (internal)
+
+- Align the Shield O mark beside the title and subtitle on desktop and phones.
+
+## v0.6.17 — Unattended deployment test (internal)
+
+- Bump the application and installer version to exercise signed deployment.
+- Skip Debian package changes when upgrading an existing OPM installation.
+
+## v0.6.16 — Shield O branding (internal)
+
+- Apply the approved teal shield / white O mark as the navigation brand symbol and sign-in logo. Preserve the existing ONYX / PATCH MANAGER wordmark and mobile navigation.
+- Ship an offline first-party SVG mark, PNG fallbacks at 16/32/48/64/180/192 pixels, multi-resolution `.ico`, and Apple Touch icon. All assets are derived from one vector source; no third-party image loading or network requirement.
+- Use the same favicon on authenticated pages and login, with cache-safe static asset links compatible with Django's manifest static file pipeline.
+- Preserve all v0.6.15 improvements: administrator-only Clear all history, non-destructive Clear alerts, bounded History scrolling, equal-height independent Dashboard panels.
+- Release: internal v0.6.16; no changes to patch execution, activity processing, account permissions or stored records. Live browser appearance remains to be verified by the user.
+
+## v0.6.15 — History and dashboard usability (internal)
+
+- **Clear all history:** Replace the limited patch-history deletion button with an administrator-only, checkbox-confirmed deletion of patch jobs/task logs, background activities (including SSH repair), and Django audit records. Delete the related SQL records atomically in the shared SQLite database. Keep server inventory, host scans, Compose verifications, pending unused plans, accounts, sessions and login rate-limit protection. Refuse deletion during any active or locked operation. Clean up old known patch job artifact directories separately; never accept arbitrary paths.
+- **Clear alerts:** Add an administrator-only button to the header Activity dropdown. It acknowledges past failures and warnings without deleting evidence, and returns to the page the administrator was viewing. Existing History maintenance acknowledgement uses the same semantics.
+- **Bounded History:** Internal scrolling with a sticky table header; filters and History maintenance stay visible outside the scroll area.
+- **Equal-sized Dashboard cards:** Server Overview and Recent Activity use the same responsive fixed-height container, each with its own scrollbar when content overflows. The Recent Activity view now shows up to 20 entries, so older recent events remain accessible without growing the dashboard. Server sorting and existing responsive layout remain intact.
+- **Branding:** Favicon/sidebar replacement was approved and implemented in the following v0.6.16 release.
+- **Validation:** New in-memory SQLite regressions check atomic all-history deletion, active/locked work refusal, retention of inventory and scan records, warning acknowledgement, and template/layout contracts. No production history was deleted during testing.
+- **Release:** Internal v0.6.15; next public milestone remains v0.7.0.
+
+## v0.6.14 — Runner cancellation classification hotfix (internal)
+
+- Fix live GM finding: stopping a patch job during Ansible could produce Runner `canceled` (exit 254), which OPM previously displayed as **Failed**. Now it records **Interrupted** and reconciles the affected target.
+- Keep real Ansible task failures classified as **Failed**, preserve prior completed targets, and require manual remote package inspection before retrying. No automatic job restarts.
+- Update regression coverage. This is an internal test build; live retest is still needed. No change to approved APT packages, repository trust policy or Docker Compose updating.
+
+## v0.6.13 — Patch worker interruption recovery (internal)
+
+- **Consistent states:** Reconcile a stopped OS worker and all nonterminal targets in one SQLite transaction. Running/verifying become Interrupted; unstarted become Not started. Completed, failed and cancelled target results are preserved. Host locks are released only after reconciliation.
+- **Visible recovery:** Show the last recorded step per affected target, a bounded worker-exit detail when systemd still exposes one, and explicit manual APT/dpkg checks. Interrupted jobs are never replayed automatically.
+- **Live reconciliation:** The controller rechecks orphan workers periodically as well as at startup, without marking a worker interrupted on inconclusive systemd errors or during its normal launch grace period.
+- **Presentation:** Display Completed with warnings instead of internal enum names in job detail, History and Dashboard.
+- **Scope:** Internal v0.6.13. No changes to apt patch selection, Docker Compose operations or external service configurations.
+
+## v0.6.12 — Partial APT repository patching (internal)
+
+- **Repository warning workflow:** A scanned host with incomplete APT indexes can still be reviewed. The review requires an explicit checkbox acknowledging that packages may be excluded; the approval is recorded in the controller database. Existing protected-host approval remains separate.
+- **Safe fallback, not a repository editor:** After strict `apt-get update -o APT::Update::Error-Mode=any` fails, the worker creates a new isolated directory for signed APT indexes. Stale old indexes, explicitly trusted/insecure repositories and invalid signature metadata cannot enter the fallback transaction. No repository source or key is modified.
+- **Immutable package approval:** Require every simulated package/version to appear in the approved scan, reject version drift, unexpected dependency actions, removals and unsigned/missing indexes. If no safe subset is established, abort before installing.
+- **Explicit execution:** Use Ansible `command` with fixed APT argv, authenticated sudo and the isolated verified index path; no shell and no automatic removals or new package installs. Dry Run remains read-only and doesn't use this modifying path.
+- **Accurate reports:** Compare selected package versions with `dpkg-query` after execution. History and job details show verified versions, candidates unavailable from newly verified sources, held packages and unchanged selections. Record **Completed with warnings** when partial execution succeeds; ambiguous/failed package operations remain failures rather than successes.
+- **Testing:** Mocked Debian/Cloudflare failure scenarios, invalid/missing signatures, candidate drift, password handling, stored acknowledgement, worker state, syntax, and a local read-only APT CLI simulation. Live package upgrade against a broken repository remains an untested GM acceptance gate.
+- **Release:** Internal v0.6.12. Public milestone remains v0.6.0; next public milestone planned v0.7.0.
+
+## v0.6.11 — Controller label and GM acceptance checklist (internal)
+
+- Rename the bottom-left sidebar status **LOCAL CONTROLLER** to **OPM Controller**, including its live online/offline accessibility labels. Status health polling is unchanged.
+- Add `GM_READINESS_CHECKLIST.md`: completed field tests, P0 live GM acceptance gates, recommended next actions, and an evidence log.
+- Record **Podman application logos as a deferred live defect** rather than claiming operational readiness. Podman updates remain disabled; Docker Compose updating is unchanged.
+- No data migration, remote changes, or patch-worker behavior changes.
+
+## v0.6.10 — Podman logos and readable server display names (internal)
+
+- Use the same application-artwork resolver for Docker and Podman containers,
+  including scanned rootless Podman user contexts. Automatic selection prefers
+  Docker images, then Podman images, then the Linux distribution logo. Dedupe
+  identical repository images across engines; preserve existing logo IDs.
+- Fix persistent selection of non-Docker-Hub (`image:`) logos in the controller
+  store. Validate selections against current scan candidates; never allow a
+  user-controlled logo URL or remote registry fetch.
+- Permit single internal spaces in server *display names*. SSH usernames, host
+  addresses, and credentials keep their existing strict validation. For spaced
+  names only, generate a stable, immutable-ID-based Ansible inventory alias and
+  validate runner callbacks/recaps against the alias, not the display name.
+- No Podman image pull/recreation is enabled. Docker Compose explicit approvals
+  and update preflight are unchanged. No SQL schema migration is required.
+
+## v0.6.9 — Generic container application logos (internal)
+
+- Fix the silent Debian fallback when Docker Hub does not publish artwork:
+  exact-repository Docker Hub logos are checked first, then the **same generic
+  application-icon resolver** for every recognized Docker image, without a
+  hardcoded per-image/logo mapping.
+- Detect app icon candidates from the sanitized image basename across Docker Hub,
+  GHCR, LinuxServer and other registries. Match only existing raster artwork at
+  the fixed public Dashboard Icons source; never fetch arbitrary registry or
+  user-supplied icon URLs, namespace avatars, SVG or executable content.
+- Keep all discovered, non-vendor Docker images selectable, including private
+  registry names. Where no matching artwork is published or internet access is
+  blocked, explicitly say that in Edit Server and show the distro fallback.
+- Invalidate old negative logo cache entries and disable browser-side stale
+  caching; show a live preview and explanation in Edit Server.
+- No changes to Compose update execution, authorization, or remote scanning.
+  Docker image references are used for artwork lookup only; no image pulls.
+
+
+# OPM v0.6.8 — Internal hotfix: Docker Compose service hash verification
+
+- **Root cause:** v0.6.6–0.6.7 used `docker compose config --hash` without a required service selector. Docker Compose V2 defines `--hash` as a string flag, causing source verification to fail with “Compose service hashes are not available” on actual hosts. Earlier mocked tests incorrectly accepted that invocation.
+- **Fix:** Compute only the running project's selected service hashes with `docker compose config --hash=<service>` (or comma-separated service names). Keep comparing these values to deployed `com.docker.compose.config-hash` labels; do not bypass mismatches or silently accept missing hashes.
+- **Update guard:** The Compose update worker reuses this verifier before any image pull and again before recreation. Existing approval, protected-host rules, and no-automatic-rollback policy are unchanged.
+- **Confidentiality:** CLI error output remains on the managed host; no Compose YAML, env values, source paths, or registry credentials are sent to the controller or browser.
+- **Validation:** Regression tests simulate the real CLI rejection of a bare `--hash`, correct single/multi-service selectors, output failures, mismatch, and the update write barrier. A live Compose verification is still needed on the managed host.
+- **Release policy:** Internal hotfix v0.6.8, next GitHub public milestone remains v0.7.0.
+
+# OPM v0.6.7 — Internal test build: server logos and approved Docker Compose updates
+
+- **Verify Configuration action:** Administrators can explicitly verify a detected, non-vendor Docker Compose project on a managed server from **Servers → Server profile → Docker Compose projects**. Sudo is requested when necessary or reused from a valid, same-session authorization. Verification is a background Activity recorded in History.
+- **Read-only remote checks:** OPM retrieves Docker Compose labels from the running deployment, checks the source project directory and Compose-file availability on the target, runs `docker compose config --quiet`, confirms declared services, and compares Compose service configuration hashes to the deployed container labels. Files, environment values, and paths are never returned or saved.
+- **Fail-closed policy:** Missing source files, vendor-managed workloads, one-off containers, unknown provenance, mismatched configuration hashes, absent Compose support, or inaccessible Docker lead to explicit verification failure, not automatic approval. Only rootful Docker contexts are supported in this initial source-verification pass.
+- **Persistence and freshness:** Store only the project, Docker scope, verification time, service/container counts, and a fixed sanitized status. Verified badges expire after one hour. Verification is informational and does **not** authorize a future update. Any future update implementation must revalidate at execution time.
+- **Read-only verification:** The Verify Configuration action never pulls, recreates or restarts containers. Image updates are a separate, explicitly approved v0.6.7 action. The existing optional scan-time Skopeo registry metadata check is independent of source verification.
+- **Validation:** Automated unit and regression tests include matching source, changed config hash, missing files, vendor exclusion, audited status, input validation, and no mutating Docker commands. Live Debian/Docker Compose verification remains required.
+- **Release policy:** Internal build v0.6.7; the latest public milestone remains v0.6.0. The next planned public GitHub milestone is v0.7.0.
+
+# OPM v0.6.5 — Internal hotfix: Django migration app-label correction
+
+- **Upgrade blocker fixed:** The v0.6.4 `0002_audit_actor_name` migration incorrectly depended on `web.0001_initial` instead of the registered Django app label `opm_web.0001_initial`. Django therefore raised `NodeNotFoundError` before applying migrations.
+- **Audit backfill corrected:** The historical `AuditEvent` lookup now uses `apps.get_model('opm_web', 'AuditEvent')`, matching the same app label. This ensures the audit-attribution backfill runs correctly instead of failing after the graph is repaired.
+- **Data preservation:** No database reset, replacement or manual `--fake` migration is required. The standard installer creates its normal SQLite backup; failed v0.6.4 installations can be repaired by re-running `OPMInstall.sh --install` from this corrected source.
+- **Release type:** Internal hotfix v0.6.5; public GitHub milestone remains v0.6.0. No change to patch execution, SSH authorization, account-delete policy or Docker Compose scope.
+- **Validation:** Automated migration-label regression coverage, existing test suite and syntax checks. Live reinstall and migration on a controller with existing records still require user verification.
+
+# OPM v0.6.4 — Internal test build: account controls and form consistency
+
+- **Account lifecycle:** Move status control to the administrator-only Edit account page with Disable (required acknowledgement checkbox), Enable, and Delete account actions. Disabled accounts can be re-enabled without recreating them. Remove the obsolete inline disable UI and SQLite storage explanation from Settings.
+- **Deletion safety:** Account deletion requires a checked acknowledgment and an explicit destructive button, not a typed username. Server-side validation refuses missing acknowledgements, self-deletion, and deletion of the last active administrator. Existing audit records retain their actor names through a Django schema migration; deletions are also audited.
+- **Consistent confirmations:** Inventory removal and job cancellation also use explicit required checkboxes instead of typing `REMOVE` or `CANCEL`. Server-side permission checks and acknowledgement checks remain mandatory.
+- **Full-width forms:** Standardize review refresh and Scan All individual-password disclosures with their parent sudo input widths; align account, Repair SSH, and shared form-panel content while preserving small-screen wrapping and intentionally compact login controls.
+- **Scope and testing:** No changes to OS patch execution, Docker Compose update execution, remote SSH provisioning, sudo credentials, or vendor-management boundaries. Automated source/regression tests pass; deployment and live Django/browser verification remain necessary.
+- **Release classification:** Internal v0.6.4. Public milestone remains v0.6.0; next public milestone will be v0.7.0 after acceptance testing.
+
+# OPM v0.6.3 — Internal test build: consistent patch-review geometry
+
+- **Alignment:** The Review patch plan surface uses a single horizontal inset for Proposed operations, host package lists, the Important warning, the sudo password field, the Protected server selected warning, and the approval controls. The nested protected-host warning no longer gets extra horizontal margins.
+- **Responsive layout:** Full-width desktop review is preserved. Small screens use a 16px inset and the action controls wrap if necessary.
+- **Safety unchanged:** No changes to sudo caching, scan freshness, plan creation, protected-host acknowledgement, remote execution, database or controller services.
+- **Release classification:** Internal v0.6.3 (not a new GitHub milestone). Browser visual acceptance remains to be confirmed on the running controller.
+
+# OPM v0.6.2 — Internal test build: seamless patch review with stale scans
+
+- **Fewer navigation steps:** Clicking Review selected OS updates with out-of-date, failed, or missing scan results opens a purpose-built sudo/scan screen without losing the selected servers or execution mode. The legacy backend safety error is retained for out-of-band/invalid requests, not shown as the normal UI workflow.
+- **Selective scan refresh:** Only stale selected hosts are scanned. The controller strictly verifies target IDs, SSH enrollment, and sudo credentials before starting read-only discovery. No package installation occurs during scan refresh.
+- **Session-scoped authorization:** Sudo passwords are submitted once to the controller and are not copied into the Django session or saved in SQLite. Valid cached credentials can be reused for up to 10 minutes in the same login session.
+- **Return to review:** The scan progress screen refreshes and POSTs the completed selection into an immutable plan, preserving Dry Run/Apply and APT metadata refresh preference. Failed or interrupted scans are never automatically retried, and no patch operation starts before the ordinary explicit final approval.
+- **Safety:** Existing one-hour scan freshness, package and supported-OS validation, protected-server acknowledgement, and job locking remain unchanged. Source-level and simulated-controller regression checks verify selected-only scans and non-persistence of credentials.
+- **Release classification:** Internal v0.6.2. The most recent public GitHub milestone remains v0.6.0. Docker Compose execution is still out of scope for this build.
+
+# OPM v0.6.1 — Internal test build: Docker Compose project inventory
+
+- Restrict planned container update scope to **Docker Compose only**. Podman, Podman Compose, Quadlet, standalone Docker, one-off Compose and vendor-managed workloads remain review-only and cannot be updated.
+- Read Docker Compose project/service labels and capture only boolean configuration evidence (working-directory/config-files present), without storing their actual paths or exposing secrets. The source Compose file must still be reverified before any mutating update.
+- Group Docker Compose services into project summaries in Servers → Host detail and Patch Manager → expanded host details. Label vendor-managed and one-off containers as excluded. Older scans remain displayable as unverified candidates.
+- **No container updates are enabled in v0.6.1.** The next development stage requires explicit plan approval, immutable snapshot and digest comparison, execution worker and post-update verification. No database schema changes.
+- This is an **internal patch-version build**, not the next GitHub milestone (per VERSIONING.md).
+
 # OPM v0.6.0 — GitHub milestone and usability refinements
 
 - **Release policy:** Public GitHub milestones increment the middle version component (`0.6.0`, then `0.7.0`). Internal testing increments the third (`0.6.1` etc.). GM is the major release `1.0.0`. See `VERSIONING.md`.
 - **Conditional SSH repair:** Show the administrator-only Repair SSH action on previously verified `opm` hosts only when the latest relevant recorded scan or SSH test indicates key-authentication failure. Healthy hosts, ICMP failures, network outages and unrelated sudo failures do not trigger it. Later successful SSH evidence clears the action. Test SSH can be used to establish a diagnosis. Backend authorization and recovery safeguards remain intact.
 - **Settings:** Remove the duplicate top-level Change my password button. Retain Edit password under the account row and the separate password-change workflow.
 - **Dashboard:** Default to numeric IP ordering (IPv4, IPv6, then DNS hosts); provide an IP sorting option. With configured group headings, numeric order applies within groups. Sort using server-derived ordinal positions so Viewer HTML never carries raw IP data in sort attributes.
-- **GitHub documentation:** Consolidated README and release notes; add a full GitHub release description and versioning policy. Consolidated development highlights and release validation status are recorded in the [v0.6.0 GitHub release](https://github.com/dnurse/onyx-patch-manager/releases/tag/v0.6.0).
+- **GitHub documentation:** Consolidated README and release notes; add a full GitHub release description and versioning policy. Detailed historical changes since v0.5.6 stay in `CHANGELOG_SINCE_0.5.6.md`.
 - **Release status:** Development/pre-GM. No new Compose update or automated password-fallback path. Live SSH recovery and responsive UI still need acceptance testing.
 
 # OPM v0.5.24 — Settings repair, full-width forms, managed SSH account recovery, legacy UI cleanup
@@ -316,3 +488,14 @@ LAN HTTP is unencrypted. Use only over a private, trusted LAN or encrypted VPN; 
 ## Validation
 
 Local automated tests cover menu defaults, noninteractive fallback, mode configuration, controller activity plumbing, secret preservation and proxy restrictions. Real LXC, NPM and iPhone access remain to be validated.
+
+### v0.6.7 operational caution
+
+Docker Compose image refresh is now an explicitly approved **mutating** operation.
+It pulls from the image registry and recreates the selected service only when
+the pulled image identity differs from the running one. It validates source
+metadata immediately before the pull and again before recreation, then checks
+Docker running/health status. A Docker health check is not an application
+integrity test. Backup data and confirm upgrade compatibility independently;
+there is no automated rollback of images, volumes or database migrations.
+No auto-update schedule, automatic retry or cross-project bulk update is present.

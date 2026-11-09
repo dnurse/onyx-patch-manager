@@ -1,5 +1,5 @@
 {% extends 'web/base.html' %}
-{% block breadcrumb %}Patch Manager / Scan authorization{% endblock %}
+{% block breadcrumb_parents %}<a href="{% url 'patch_manager' %}">Patch Manager</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Scan authorization{% endblock %}
 {% block title %}Authorize read-only scan{% endblock %}
 {% block body %}
 <div class="page-intro"><div><p class="eyebrow">READ-ONLY DISCOVERY</p>

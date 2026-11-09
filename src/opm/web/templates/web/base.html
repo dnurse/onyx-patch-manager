@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark"><title>{% block title %}Onyx Patch Manager{% endblock %} | OPM</title>
+<link rel="icon" href="{% static 'web/branding/favicon.ico' %}" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'web/branding/shield-o-32.png' %}">
+<link rel="icon" type="image/svg+xml" href="{% static 'web/branding/shield-o.svg' %}">
+<link rel="apple-touch-icon" sizes="180x180" href="{% static 'web/branding/shield-o-180.png' %}">
 {% if refresh %}<meta http-equiv="refresh" content="8">{% endif %}
 <link rel="stylesheet" href="{% static 'web/styles.css' %}">
 <script defer src="{% static 'web/actions.js' %}"></script>
@@ -13,7 +17,7 @@
 <body>
 <div class="app-shell">
   <aside class="sidebar" aria-label="Primary navigation">
-    <a href="{% url 'dashboard' %}" class="brand"><span class="brand-symbol">O</span><span><strong>ONYX</strong><small>PATCH MANAGER</small></span></a>
+    <a href="{% url 'dashboard' %}" class="brand"><span class="brand-symbol" aria-hidden="true"><img src="{% static 'web/branding/shield-o.svg' %}" width="38" height="38" alt=""></span><span><strong>ONYX</strong><small>PATCH MANAGER</small></span></a>
     <div class="sidebar-section">WORKSPACE</div>
     <nav class="nav-links">
       <a class="nav-link {% if page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}">Dashboard</a>
@@ -23,13 +27,20 @@
       {% if request.user.is_staff %}<a class="nav-link {% if page == 'settings' %}active{% endif %}" href="{% url 'settings' %}">Settings</a>{% endif %}
     </nav>
     <div class="sidebar-bottom">
-      <div class="controller-mini"><span id="opm-controller-indicator" class="dot {% if controller.status == "ready" %}good{% else %}bad{% endif %}" role="img" aria-label="Local controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" title="Local controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" data-health-url="{% url 'controller_health' %}"></span><span>LOCAL CONTROLLER</span></div>
+      <div class="controller-mini"><span id="opm-controller-indicator" class="dot {% if controller.status == "ready" %}good{% else %}bad{% endif %}" role="img" aria-label="OPM Controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" title="OPM Controller {% if controller.status == 'ready' %}online{% else %}offline{% endif %}" data-health-url="{% url 'controller_health' %}"></span><span>OPM Controller</span></div>
       <div class="sidebar-user"><span class="user-detail"><strong>{{ request.user.username }}</strong><small>{% if request.user.is_superuser %}Administrator{% elif request.user.is_staff %}Operator{% else %}Viewer{% endif %}</small></span></div>
       <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="logout-link" type="submit">Sign out</button></form>
     </div>
   </aside>
   <div class="main-wrap">
-    <header class="topbar"><div class="topbar-title">OPM <span>/</span> {% block breadcrumb %}Overview{% endblock %}</div><div class="topbar-right"><div class="activity-control">
+    <header class="topbar">
+      <nav class="topbar-title" aria-label="Breadcrumb">
+        <a href="{% url 'dashboard' %}">OPM</a>
+        <span class="breadcrumb-separator" aria-hidden="true">/</span>
+        {% block breadcrumb_parents %}{% endblock %}
+        <span aria-current="page">{% block breadcrumb %}Overview{% endblock %}</span>
+      </nav>
+      <div class="topbar-right"><div class="activity-control">
       <button type="button" id="opm-activity-toggle" class="activity-toggle" aria-expanded="false" aria-controls="opm-activity-panel">
         <span class="activity-pulse" aria-hidden="true"></span>
         <span id="opm-activity-count">Activity</span>
@@ -37,7 +48,10 @@
       <section id="opm-activity-panel" class="activity-dropdown" hidden aria-label="Background activity">
         <div class="activity-dropdown-head"><strong>Background activity</strong><span id="opm-activity-freshness">Updating...</span></div>
         <div id="opm-activity-items" class="activity-dropdown-list"><p class="muted small">Checking the controller...</p></div>
-        <a class="activity-dropdown-footer" href="{% url 'history' %}">History</a>
+        <div class="activity-dropdown-actions">
+          {% if request.user.is_superuser %}<form method="post" action="{% url 'dismiss_alerts' %}">{% csrf_token %}<input type="hidden" name="next" value="{{ request.path }}"><button type="submit" class="activity-clear-alerts">Clear alerts</button></form>{% endif %}
+          <a class="activity-dropdown-footer" href="{% url 'history' %}">History</a>
+        </div>
       </section>
     </div><span class="top-version">v{{ opm_version }}</span><form method="post" action="{% url 'logout' %}" class="mobile-logout">{% csrf_token %}<button type="submit" aria-label="Sign out">Sign out</button></form></div></header>
     <main class="main-content" id="content">

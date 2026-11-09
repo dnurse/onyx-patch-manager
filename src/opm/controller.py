@@ -9,6 +9,7 @@ accepted, and all patch jobs require a recorded, explicit approval.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import os
 import re
@@ -23,13 +24,16 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config
-from .remote import accept_host_key, inspect_host, probe_host_key, probe_icmp_reachability, test_connection, verify_sudo_password
+from .remote import accept_host_key, inspect_host, probe_host_key, probe_icmp_reachability, test_connection, verify_sudo_password, verify_compose_source
 from .onboarding import bootstrap_account, ensure_managed_key, probe_managed_account
 from .runtime import check_ansible_runtime, AnsibleDependencyError
 from .store import Store
+from .compose_inventory import docker_compose_projects
+from .compose_updates import update_compose_service
 from .validation import sanitize, validate_host, USER_RE
 
 MAX_MESSAGE = 256_000
+MAX_REPLY = 2_000_000  # Inventory replies can span multiple CSV import batches.
 SUDO_AUTH_TTL_SECONDS = 600  # Ten minutes from a successful authenticated scan.
 _CREDENTIAL_SCOPE_RE = re.compile(r'^[a-f0-9]{64}$')
 
@@ -44,6 +48,7 @@ class Controller:
         # Every non-patch operation is owned by the long-lived controller event
         # loop, not a Django request. Keep references until completion.
         self._scans: set[asyncio.Task] = set()
+        self._job_watch_task: asyncio.Task | None = None
         # Dashboard probes are cached in the central controller, not per
         # browser session. Opening several tabs must not multiply network
         # checks against every managed host. A 110-second cache complements
@@ -111,29 +116,82 @@ class Controller:
         server = await asyncio.start_unix_server(self.handle, path=str(path))
         path.chmod(0o600)
         self.store.reconcile_activities()
-        await self.reconcile_jobs()
+        await self.reconcile_jobs(startup=True)
+        self._job_watch_task = asyncio.create_task(self._watch_patch_jobs())
         try:
             async with server:
                 await server.serve_forever()
         finally:
+            if self._job_watch_task:
+                self._job_watch_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._job_watch_task
             path.unlink(missing_ok=True)
 
-    async def reconcile_jobs(self) -> None:
-        """Do not requeue operations that may have partially changed a host."""
-        for job in self.store.jobs():
-            if job["state"] not in ("queued", "running"):
+    async def _watch_patch_jobs(self) -> None:
+        """Detect vanished detached workers without requiring controller restart."""
+        while True:
+            await asyncio.sleep(12)
+            try:
+                await self.reconcile_jobs()
+            except Exception:
+                # A temporary systemd/SQLite error must not stop the controller.
+                # The next pass retries; ambiguous unit state is never treated
+                # as proof that a worker stopped.
                 continue
-            cmd = ["systemctl", "--user", "is-active", f"opm-job-{job['id']}.service"]
+
+    async def _worker_exit_detail(self, unit: str) -> str:
+        """Report systemd exit metadata only when still available and trusted."""
+        cmd = ['systemctl', '--user', 'show', unit, '--property=Result',
+               '--property=ExecMainStatus', '--property=ExecMainCode', '--no-pager']
+        try:
+            p = await asyncio.to_thread(subprocess.run, cmd, capture_output=True,
+                                        text=True, timeout=8)
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        if p.returncode:
+            return ''
+        values = dict(line.split('=', 1) for line in p.stdout.splitlines() if '=' in line)
+        result = values.get('Result', '')
+        code = values.get('ExecMainCode', '')
+        status = values.get('ExecMainStatus', '')
+        if result not in {'success', 'exit-code', 'signal', 'core-dump', 'timeout',
+                          'watchdog', 'oom-kill', 'resources', 'start-limit-hit'}:
+            return ''
+        parts = ['systemd result: ' + result]
+        if code.isdecimal() and len(code) <= 3:
+            parts.append('exit code type: ' + code)
+        if status.isdecimal() and len(status) <= 3:
+            parts.append('exit status: ' + status)
+        return ', '.join(parts)
+
+    async def reconcile_jobs(self, *, startup: bool = False) -> None:
+        """Reconcile orphan workers; never restart a potentially partial patch.
+
+        A newly queued job may not have reached systemd-run yet. Allow a
+        startup grace period for queued jobs on periodic checks, and refuse
+        to infer a stopped worker from a systemd communication error.
+        """
+        for job in self.store.jobs():
+            if job['state'] not in ('queued', 'running'):
+                continue
+            if (not startup and job['state'] == 'queued' and
+                    time.time() - job['created'] < 45):
+                continue
+            unit = f"opm-job-{job['id']}.service"
+            cmd = ['systemctl', '--user', 'is-active', unit]
             try:
                 p = await asyncio.to_thread(subprocess.run, cmd, capture_output=True,
                                             text=True, timeout=8)
-                alive = p.returncode == 0 and p.stdout.strip() in ("active", "activating")
             except (OSError, subprocess.TimeoutExpired):
-                alive = False
-            if not alive:
-                self.store.event(job["id"], None, "warning", "Recovery",
-                                 "Worker is not active. Remote state requires reconciliation before retry")
-                self.store.job_state(job["id"], "interrupted", "Worker stopped or controller restarted")
+                continue  # Unknown status is not proof of interruption.
+            state = p.stdout.strip().lower()
+            if state in ('active', 'activating', 'reloading') and p.returncode == 0:
+                continue
+            if state not in ('inactive', 'failed', 'unknown'):
+                continue  # E.g. deactivating or user-bus error; worker may still be running.
+            detail = await self._worker_exit_detail(unit)
+            self.store.interrupt_job(job['id'], 'Patch worker no longer active', detail)
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Authenticate the Unix peer and process one bounded JSON request."""
@@ -180,7 +238,7 @@ class Controller:
                     'id': job['id'], 'kind': 'patch',
                     'label': 'OS dry run' if job.get('mode') == 'dry_run' else 'OS patch job',
                     'state': job['state'],
-                    'attention': (job['state'] in ('failed','interrupted','partially_completed')
+                    'attention': (job['state'] in ('failed','interrupted','partially_completed','completed_with_warnings')
                                   and not job.get('acknowledged')),
                     'detail': job['error'] or
                         ('Running Ansible tasks' if job['state'] == 'running' else job['state'].replace('_', ' ').title()),
@@ -336,6 +394,125 @@ class Controller:
             except Exception:
                 return {"provisioned": True, "verified": False,
                         "warning": "Account created, but key login is not yet verified. Use Test SSH"}
+        if method == "hosts.compose_verifications":
+            host = self.store.host(str(params.get('id', '')))
+            return list(self.store.compose_verifications(host['id']).values())
+        if method == "hosts.compose_verify.start":
+            # Only admin-authorized Django views can reach this operation.
+            # Independently validate the project against the latest controller
+            # inventory; never accept a path or command from the web client.
+            host = self.store.host(str(params.get('id', '')))
+            if not host['verified']:
+                raise ValueError('Complete SSH setup before Compose verification')
+            project = params.get('project')
+            if not isinstance(project, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,119}', project):
+                raise ValueError('Invalid Docker Compose project')
+            if self.store.is_locked(host['id']):
+                raise ValueError('A patch job is using this server. Retry later')
+            scan = self.store.last_scan(host['id'])
+            if not scan or scan['state'] != 'completed':
+                raise ValueError('Scan this server before verifying its Compose configuration')
+            projects = docker_compose_projects((scan.get('result') or {}).get('engines'))
+            candidates = [p for p in projects if p['name'] == project]
+            if len(candidates) != 1:
+                raise ValueError('Compose project is missing or ambiguous. Run a fresh scan')
+            candidate = candidates[0]
+            if candidate['vendor_managed'] or candidate['oneoff']:
+                raise ValueError('Vendor-managed or one-off Compose projects are excluded')
+            if not candidate['config_evidence'] or candidate['legacy_evidence']:
+                raise ValueError('Compose project has insufficient source evidence. Run a fresh scan')
+            if not (candidate['scope'] == 'root' or candidate['scope'] == 'OPM SSH user'):
+                raise ValueError('Only rootful Docker Compose workloads are supported for verification')
+            supplied = params.get('sudo_password', '')
+            if not isinstance(supplied, str) or len(supplied) > 2048 or any(
+                    c in supplied for c in '\r\n\x00'):
+                raise ValueError('Invalid sudo authorization')
+            scope = str(params.get('credential_scope', ''))
+            password = supplied or self._cached_password(scope, host['id'])
+            if host.get('sudo_mode') == 'password' and not password:
+                raise ValueError('Enter the server sudo password to verify Docker Compose')
+            activity = self.store.begin_activity('compose_verify',
+                'Verifying Docker Compose: ' + host['name'] + ' / ' + project,
+                ['host:' + host['id']])
+            self._launch_activity(self.verify_compose_background(
+                activity['id'], host, project, candidate['scope'], password, bool(supplied), scope))
+            return {'activity_id': activity['id'], 'scheduled': 1}
+        if method == "hosts.compose_update.start":
+            # Administrator-approved POSTs only. The controller enforces all
+            # operational prerequisites even if the browser is bypassed.
+            host = self.store.host(str(params.get('id', '')))
+            project, service = params.get('project'), params.get('service')
+            if (not isinstance(project, str) or
+                not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,119}', project) or
+                not isinstance(service, str) or
+                not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,119}', service)):
+                raise ValueError('Invalid Docker Compose project or service')
+            if not host['verified'] or host['sudo_mode'] == 'read_only':
+                raise ValueError('Verified, writable SSH access is required')
+            if params.get('confirm_update') is not True:
+                raise ValueError('Acknowledge the container restart and data risk before updating')
+            if host.get('protected') and params.get('protected_ack') is not True:
+                raise ValueError('Protected server approval is required')
+            scan = self.store.last_scan(host['id'])
+            if not scan or scan['state'] != 'completed':
+                raise ValueError('Scan the server before updating a Docker Compose service')
+            candidates = [p for p in docker_compose_projects(
+                (scan.get('result') or {}).get('engines')) if p['name'] == project]
+            if len(candidates) != 1:
+                raise ValueError('Compose project is missing or ambiguous; scan the server again')
+            candidate = candidates[0]
+            if (candidate['vendor_managed'] or candidate['oneoff'] or
+                candidate['legacy_evidence'] or not candidate['config_evidence'] or
+                candidate['scope'] not in ('root', 'OPM SSH user')):
+                raise ValueError('This Compose project cannot be updated by OPM')
+            services = [s for s in candidate['services'] if s['name'] == service]
+            if not services or any(s['vendor_managed'] for s in services):
+                raise ValueError('Selected service is not an eligible Compose service')
+            if any('@sha256:' in s['image'] for s in services):
+                raise ValueError('Digest-pinned services are review-only')
+            record = self.store.compose_verifications(host['id']).get(
+                (project, candidate['scope']))
+            if (not record or record['status'] != 'verified' or
+                    time.time() - record['checked'] > 3600):
+                raise ValueError('Verify Configuration for this project before applying an update')
+            supplied = params.get('sudo_password', '')
+            if (not isinstance(supplied, str) or len(supplied) > 2048 or
+                    any(c in supplied for c in '\r\n\x00')):
+                raise ValueError('Invalid sudo authorization')
+            scope = str(params.get('credential_scope', ''))
+            password = supplied or self._cached_password(scope, host['id'])
+            if host['sudo_mode'] == 'password' and not password:
+                raise ValueError('Enter the server sudo password to update its Compose service')
+            activity = self.store.begin_activity('compose_update',
+                'Updating Docker Compose: ' + host['name'] + ' / ' + project + ' / ' + service,
+                ['host:' + host['id']])
+            self._launch_activity(self.update_compose_background(
+                activity['id'], host, project, service, candidate['scope'],
+                password, bool(supplied), scope))
+            return {'activity_id': activity['id'], 'scheduled': 1}
+        if method == "hosts.logo_info":
+            # One bounded read-only RPC per image request, not two full
+            # hosts/scans lists. Never expose arbitrary inspection metadata.
+            host = self.store.host(str(params.get('id', '')))
+            scan = self.store.last_scan(host['id'])
+            result = (scan or {}).get('result') or {}
+            engines = result.get('engines') or {}
+            # Expose only minimum logo metadata. Include consolidated root and
+            # rootless Podman observations without exposing owners or scopes.
+            icon_engines = {}
+            for engine in ('docker', 'podman'):
+                inventory = engines.get(engine) or {}
+                containers = inventory.get('containers') or []
+                icon_engines[engine] = {'containers': [
+                    {'image': c.get('image', ''), 'managed_by': c.get('managed_by', '')}
+                    for c in containers[:500] if isinstance(c, dict)]}
+            return {
+                'id': host['id'], 'name': host['name'],
+                'logo_choice': host.get('logo_choice') or 'auto',
+                'protected': bool(host['protected']),
+                'os': result.get('os') or {},
+                'engines': icon_engines,
+            }
         if method == "hosts.list":
             return self.store.hosts()
         if method == "hosts.reachability":
@@ -344,8 +521,23 @@ class Controller:
             return await self.dashboard_reachability()
         if method == "hosts.add":
             return self.store.add_host(params)
+        if method in ("hosts.csv_preview", "hosts.csv_import"):
+            return self.store.import_hosts(params.get("profiles"), preview=method == "hosts.csv_preview")
+        if method == "hosts.csv_export":
+            return self.store.host_csv_page(str(params.get("after", "")))
         if method == "hosts.update":
             return self.store.update_host(params["id"], params["data"])
+        if method == "hosts.logo.set":
+            from .server_logos import choices_for_host
+            host = self.store.host(str(params.get('id', '')))
+            scan = self.store.last_scan(host['id'])
+            host['os'] = ((scan or {}).get('result') or {}).get('os') or {}
+            host['engines'] = ((scan or {}).get('result') or {}).get('engines') or {}
+            choice = params.get('choice')
+            valid = {item['value'] for item in choices_for_host(host)}
+            if not isinstance(choice, str) or choice not in valid:
+                raise ValueError('Logo is not available for this server. Run a fresh scan')
+            return self.store.set_host_logo(host['id'], choice)
         if method == "hosts.remove":
             self.store.remove_host(params["id"])
             return {"removed": True}
@@ -363,7 +555,18 @@ class Controller:
             self.store.verified(host["id"], True)
             return result
         if method == "scans.start":
-            if params.get("id"):
+            # A patch-review refresh may scan only its selected stale hosts.
+            # Validate the complete target list before any remote work starts.
+            if params.get("ids") is not None:
+                ids = params["ids"]
+                if (params.get("id") or not isinstance(ids, list) or not ids
+                        or len(ids) > 100 or len(set(ids)) != len(ids)
+                        or any(not isinstance(hid, str) for hid in ids)):
+                    raise ValueError('Invalid selected scan targets')
+                hosts = [self.store.host(hid) for hid in ids]
+                if any(not h['verified'] for h in hosts):
+                    raise ValueError('Complete SSH setup before scanning selected servers')
+            elif params.get("id"):
                 hosts = [self.store.host(params["id"])]
                 if not hosts[0]["verified"]:
                     raise ValueError("Complete the SSH setup wizard before scanning this server")
@@ -444,7 +647,8 @@ class Controller:
         if method == "plans.approve":
             return self.store.approve_plan(params["id"], str(os.getuid()),
                                            bool(params.get("protected_ack", False)),
-                                           str(params.get("confirmation", "")))
+                                           str(params.get("confirmation", "")),
+                                           bool(params.get("repo_warning_ack", False)))
         if method == "jobs.start":
             return await self.start_job(params["plan_id"], params.get("idempotency", ""),
                                         params.get("sudo_passwords", {}),
@@ -459,6 +663,24 @@ class Controller:
             return self._job_passwords.pop(job_id)
         if method == "alerts.acknowledge":
             return self.store.acknowledge_past_alerts()
+        if method == "history.clear":
+            result = self.store.clear_all_history()
+            # Same constrained job-artifact deletion as legacy patch clearing.
+            # No user-supplied paths are allowed.
+            import shutil
+            root = self.config.jobs.resolve()
+            errors = 0
+            for job_id in result.pop('job_ids'):
+                path = root / job_id
+                try:
+                    if path.is_symlink():
+                        path.unlink()
+                    elif path.is_dir() and path.resolve().parent == root:
+                        shutil.rmtree(path)
+                except OSError:
+                    errors += 1
+            result['artifact_cleanup_errors'] = errors
+            return result
         if method == "jobs.clear":
             # Database cleanup is transactional and refuses queued/running
             # workers. Preserve all non-patch history and the security audit.
@@ -762,6 +984,95 @@ class Controller:
             self.store.activity_finish(activity_id, 'failed',
                 'Web access change failed: ' + sanitize(str(exc), 170))
 
+    async def update_compose_background(self, activity_id: str, host: dict,
+                                        project: str, service: str, docker_scope: str,
+                                        password: str | None, supplied: bool,
+                                        credential_scope: str) -> None:
+        """One selected Docker Compose service, with non-replaying activity history."""
+        self.store.activity_progress(activity_id,
+            'Validating deployment, then pulling the selected service image')
+        try:
+            if supplied and password and host.get('sudo_mode') == 'password':
+                if not await asyncio.to_thread(verify_sudo_password, host, self.config, password):
+                    raise ValueError('Sudo authorization rejected for Compose update')
+                self._remember_sudo(credential_scope, host['id'], password)
+            outcome = await asyncio.to_thread(update_compose_service, host,
+                                               self.config, project, service, password)
+            if outcome['status'] == 'updated':
+                # Source validation must be explicitly repeated after a write.
+                self.store.save_compose_verification(host['id'], project, docker_scope,
+                    'unverified', 'Reverify Compose after the service update')
+                self.store.activity_progress(activity_id,
+                    'New image deployed; service running/health checks passed', completed=1)
+                self.store.activity_finish(activity_id, 'completed',
+                    f'Docker Compose {project} / {service}: {outcome["detail"]}',
+                    {'host_id': host['id']})
+            elif outcome['status'] == 'unchanged':
+                self.store.activity_progress(activity_id, 'Image unchanged; no restart', completed=1)
+                self.store.activity_finish(activity_id, 'completed',
+                    f'Docker Compose {project} / {service}: {outcome["detail"]}',
+                    {'host_id': host['id']})
+            else:
+                # A failed recreate can leave partial changes. Do not retry
+                # automatically, and revoke the old verification record.
+                self.store.save_compose_verification(host['id'], project, docker_scope,
+                    'unverified', 'Reverify Compose before any further changes')
+                self.store.activity_progress(activity_id, outcome['detail'], completed=1, failed=1)
+                self.store.activity_finish(activity_id, 'failed',
+                    f'Docker Compose {project} / {service}: {outcome["detail"]}',
+                    {'host_id': host['id']})
+        except Exception as exc:
+            # After an SSH interruption, a pull or recreate may have happened.
+            # Do not claim a rollback and never log untrusted subprocess output.
+            self.store.save_compose_verification(host['id'], project, docker_scope,
+                'unverified', 'Update interrupted; inspect deployment and reverify')
+            detail = ('Sudo authorization rejected; no update started'
+                      if 'Sudo authorization rejected' in str(exc) else
+                      'Update interrupted or unavailable; inspect the managed host before retrying')
+            self.store.activity_finish(activity_id, 'failed', detail,
+                                       {'host_id': host['id']})
+        finally:
+            password = None
+
+    async def verify_compose_background(self, activity_id: str, host: dict,
+                                        project: str, docker_scope: str,
+                                        password: str | None,
+                                        supplied: bool, credential_scope: str) -> None:
+        """Read-only, non-replaying Compose source validation and audit."""
+        self.store.activity_progress(activity_id, 'Checking original Docker Compose source')
+        try:
+            if supplied and password and host.get('sudo_mode') == 'password':
+                if not await asyncio.to_thread(verify_sudo_password, host, self.config, password):
+                    raise ValueError('Sudo authorization rejected for Compose verification')
+                self._remember_sudo(credential_scope, host['id'], password)
+            result = await asyncio.to_thread(verify_compose_source, host, self.config,
+                                             project, password)
+            stored = self.store.save_compose_verification(host['id'], project,
+                        docker_scope, result['status'], result['detail'],
+                        result['service_count'], result['container_count'])
+            if result['status'] == 'verified':
+                detail = f"Docker Compose {project}: source verified for {result['service_count']} services"
+                self.store.activity_progress(activity_id, 'Original source and running services match', completed=1)
+                self.store.activity_finish(activity_id, 'completed', detail,
+                                           {'host_id': host['id'], 'verified': True})
+            else:
+                detail = 'Docker Compose ' + project + ': ' + result['detail']
+                self.store.activity_progress(activity_id, detail, completed=1, failed=1)
+                self.store.activity_finish(activity_id, 'failed', detail,
+                                           {'host_id': host['id'], 'verified': False})
+        except Exception as exc:
+            message = str(exc)
+            if password:
+                message = message.replace(password, '[REDACTED]')
+            # No raw file paths, Compose contents, or subprocess stdout are
+            # kept by the controller. Avoid errors containing file paths.
+            if 'Sudo authorization rejected' not in message:
+                message = 'Remote Compose verification unavailable. Check SSH, sudo and Docker access.'
+            self.store.activity_finish(activity_id, 'failed', message,
+                                       {'host_id': host['id'], 'verified': False})
+        finally:
+            password = None
+
     async def test_host_background(self, activity_id: str, host: dict) -> None:
         """Perform the real SSH authentication check without blocking Django."""
         self.store.activity_progress(activity_id, 'Authenticating with SSH key')
@@ -983,7 +1294,7 @@ class Controller:
 async def rpc(method: str, params: dict | None = None, config: Config | None = None) -> object:
     """One-shot client RPC used by internal web and command-line operations."""
     config = config or Config.load()
-    reader, writer = await asyncio.open_unix_connection(str(config.socket))
+    reader, writer = await asyncio.open_unix_connection(str(config.socket), limit=MAX_REPLY)
     try:
         writer.write((json.dumps({"method": method, "params": params or {}}) + "\n").encode())
         await writer.drain()

@@ -1,5 +1,5 @@
 {% extends 'web/base.html' %}{% load static %}
-{% block breadcrumb %}Servers / {{ host.name }} / Repair SSH{% endblock %}
+{% block breadcrumb_parents %}<a href="{% url 'servers' %}">Servers</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> <a href="{% url 'server_detail' host.id %}">{{ host.name }}</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Repair SSH{% endblock %}
 {% block title %}Repair SSH access{% endblock %}
 {% block extra_head %}<script defer src="{% static 'web/repair_ssh.js' %}"></script>{% endblock %}
 {% block body %}

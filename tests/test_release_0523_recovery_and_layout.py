@@ -18,9 +18,9 @@ def test_layout_account_creation_and_protected_icon():
     settings=(T/'settings.html').read_text()
     enroll=(T/'enroll.html').read_text()
     host_form=(T/'host_form.html').read_text()
-    assert '{% if h.protected %}{% else %}▤{% endif %}' in dashboard
-    assert 'border:2px solid #f5f8fb' in css
-    assert 'background:#f5f8fb' in css
+    assert "include 'web/partials/server_logo.html' with server=h" in dashboard
+    assert '.server-logo-lock' in css
+    assert 'color: #fff;' in css
     assert settings.index('<h2>Accounts</h2>') < settings.index('<h2>Security</h2>')
     assert 'Create New Account' in settings
     assert 'data-account-create-toggle' not in settings

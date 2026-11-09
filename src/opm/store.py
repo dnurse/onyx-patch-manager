@@ -8,6 +8,7 @@ and busy-timeout enabled. Plans are immutable snapshots of scanned targets.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import sqlite3
 import time
@@ -16,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .host_csv import CSV_FIELDS, MAX_CSV_HOSTS
 from .validation import validate_host
 
 SCHEMA = """
@@ -25,6 +27,7 @@ CREATE TABLE IF NOT EXISTS hosts (
  key_path TEXT NOT NULL DEFAULT '', group_name TEXT NOT NULL,
  sudo_mode TEXT NOT NULL DEFAULT 'passwordless',
  protected INTEGER NOT NULL DEFAULT 0, verified INTEGER NOT NULL DEFAULT 0,
+ logo_choice TEXT NOT NULL DEFAULT 'auto',
  created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scans (
@@ -37,7 +40,8 @@ CREATE INDEX IF NOT EXISTS scans_by_host ON scans(host_id,started DESC);
 CREATE TABLE IF NOT EXISTS plans (
  id TEXT PRIMARY KEY, created REAL NOT NULL, expires REAL NOT NULL,
  snapshot_json TEXT NOT NULL, digest TEXT NOT NULL,
- approved_at REAL, approved_by TEXT, protected_ack INTEGER NOT NULL DEFAULT 0
+ approved_at REAL, approved_by TEXT, protected_ack INTEGER NOT NULL DEFAULT 0,
+ repo_warning_ack INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS jobs (
  id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, state TEXT NOT NULL,
@@ -83,6 +87,15 @@ CREATE TABLE IF NOT EXISTS activity_events (
 CREATE INDEX IF NOT EXISTS activity_events_by_activity ON activity_events(activity_id,id);
 -- Per-host activity locks avoid concurrent scans, SSH tests or enrollment
 -- on the same target. These are separate from modifying patch-job locks.
+-- Read-only source-verification snapshots. No source paths, Compose YAML,
+-- Docker inspect JSON, environment values, or passwords are persisted.
+CREATE TABLE IF NOT EXISTS compose_verifications (
+ host_id TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL,
+ checked REAL NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL,
+ service_count INTEGER NOT NULL DEFAULT 0, container_count INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(host_id, project, scope),
+ FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS activity_targets (
  target_key TEXT PRIMARY KEY, activity_id TEXT NOT NULL,
  FOREIGN KEY(activity_id) REFERENCES activities(id) ON DELETE CASCADE
@@ -136,6 +149,8 @@ class Store:
             names = {row[1] for row in db.execute("PRAGMA table_info(hosts)")}
             if "sudo_mode" not in names:
                 db.execute("ALTER TABLE hosts ADD COLUMN sudo_mode TEXT NOT NULL DEFAULT 'passwordless'")
+            if "logo_choice" not in names:
+                db.execute("ALTER TABLE hosts ADD COLUMN logo_choice TEXT NOT NULL DEFAULT 'auto'")
             # Historical job/activity rows are not deleted by migration.
             # Acknowledge state is separate from execution state so an old
             # error can be dismissed without falsifying the audit record.
@@ -143,12 +158,42 @@ class Store:
                 columns = {r[1] for r in db.execute(f'PRAGMA table_info({table})')}
                 if 'acknowledged' not in columns:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0')
+            plan_columns = {r[1] for r in db.execute('PRAGMA table_info(plans)')}
+            if 'repo_warning_ack' not in plan_columns:
+                db.execute('ALTER TABLE plans ADD COLUMN repo_warning_ack INTEGER NOT NULL DEFAULT 0')
             job_columns = {r[1] for r in db.execute('PRAGMA table_info(jobs)')}
             if 'mode' not in job_columns:
                 # Older jobs remain real patch attempts. Only new plans can
                 # explicitly opt into non-mutating simulation.
                 db.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'apply'")
         self.path.chmod(0o600)
+
+    def save_compose_verification(self, host_id: str, project: str, scope: str,
+                                  status: str, detail: str,
+                                  service_count: int = 0, container_count: int = 0) -> dict:
+        """Persist only curated status; preserve existing app and inventory."""
+        from .validation import sanitize
+        if status not in ('verified', 'unverified'):
+            raise ValueError('Invalid Compose verification state')
+        self.host(host_id)
+        with self.connection() as db:
+            db.execute("INSERT INTO compose_verifications "
+                       "(host_id,project,scope,checked,status,detail,service_count,container_count) "
+                       "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(host_id,project,scope) "
+                       "DO UPDATE SET checked=excluded.checked,status=excluded.status,"
+                       "detail=excluded.detail,service_count=excluded.service_count,"
+                       "container_count=excluded.container_count",
+                       (host_id, project[:120], scope[:120], now(), status,
+                        sanitize(detail, 200), int(service_count), int(container_count)))
+        return self.compose_verifications(host_id)[(project, scope)]
+
+    def compose_verifications(self, host_id: str) -> dict[tuple[str, str], dict]:
+        self.host(host_id)
+        with self.connection() as db:
+            rows = db.execute("SELECT project,scope,checked,status,detail,service_count,"
+                              "container_count FROM compose_verifications WHERE host_id=?",
+                              (host_id,)).fetchall()
+        return {(r['project'], r['scope']): dict(r) for r in rows}
 
     def hosts(self) -> list[dict]:
         with self.connection() as db:
@@ -161,19 +206,89 @@ class Store:
             raise ValueError("Unknown host")
         return dict(row)
 
+    def set_host_logo(self, host_id: str, choice: str) -> dict:
+        """Save a validated candidate identifier, never an image URL/path.
+
+        Controller RPC validates the choice against scan evidence first.
+        A visual preference cannot alter SSH verification or host identity.
+        """
+        if not isinstance(choice, str) or len(choice) > 40 or not (
+            choice in ('auto', 'distro') or
+            (choice.startswith(('hub:', 'image:')) and
+             len(choice) == (28 if choice.startswith('hub:') else 30) and
+             all(c in '0123456789abcdef' for c in choice.split(':', 1)[1]))):
+            raise ValueError('Invalid logo choice')
+        self.host(host_id)
+        with self.connection() as db:
+            db.execute('UPDATE hosts SET logo_choice=?,updated_at=? WHERE id=?',
+                       (choice, now(), host_id))
+        return self.host(host_id)
+
     def add_host(self, data: dict) -> dict:
         fields = validate_host(data)
-        timestamp = now()
         with self.connection() as db:
-            db.execute(
-                "INSERT INTO hosts(id,name,address,ssh_user,ssh_port,key_path,group_name,sudo_mode,protected,verified,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,0,?,?)",
-                (new_id(), fields["name"], fields["address"], fields["ssh_user"],
-                 fields["ssh_port"], fields["key_path"], fields["group_name"],
-                 fields["sudo_mode"], int(fields["protected"]), timestamp, timestamp),
-            )
-            row = db.execute("SELECT * FROM hosts WHERE name=?", (fields["name"],)).fetchone()
+            host_id = self._insert_host(db, fields)
+            row = db.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
             return dict(row)
+
+    @staticmethod
+    def _insert_host(db, fields):
+        host_id, timestamp = new_id(), now()
+        db.execute(
+            "INSERT INTO hosts(id,name,address,ssh_user,ssh_port,key_path,group_name,sudo_mode,protected,verified,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,0,?,?)",
+            (host_id, fields["name"], fields["address"], fields["ssh_user"],
+             fields["ssh_port"], fields["key_path"], fields["group_name"],
+             fields["sudo_mode"], int(fields["protected"]), timestamp, timestamp),
+        )
+        return host_id
+
+    def import_hosts(self, profiles, *, preview=False):
+        """Apply the same duplicate rules for preview and atomic creation."""
+        if (not isinstance(profiles, list) or not 1 <= len(profiles) <= MAX_CSV_HOSTS
+                or any(not isinstance(profile, dict) for profile in profiles)):
+            raise ValueError("Invalid server import batch")
+        fields = [validate_host(dict(
+            {key: profile[key] for key in CSV_FIELDS if key in profile},
+            ssh_user="opm", protected=profile.get("protected") is True,
+        )) for profile in profiles]
+
+        def endpoint(host):
+            address = host["address"].casefold()
+            try:
+                address = str(ipaddress.ip_address(address))
+            except ValueError:
+                pass
+            return address, host["ssh_port"]
+
+        with self.connection() as db:
+            if not preview:
+                db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT name,address,ssh_port FROM hosts").fetchall()
+            names = {host["name"].casefold() for host in existing}
+            endpoints = {endpoint(host) for host in existing}
+            results = []
+            for host in fields:
+                name, address = host["name"].casefold(), endpoint(host)
+                if name in names:
+                    results.append("Name already listed")
+                elif address in endpoints:
+                    results.append("Address and SSH port already listed")
+                else:
+                    if not preview:
+                        self._insert_host(db, host)
+                    names.add(name)
+                    endpoints.add(address)
+                    results.append("")
+            return results
+
+    def host_csv_page(self, after):
+        """Page public CSV fields without including keys or exceeding the RPC limit."""
+        with self.connection() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT id,name,address,ssh_port,group_name,protected FROM hosts "
+                "WHERE id > ? ORDER BY id LIMIT 40", (after,),
+            )]
 
     def update_host(self, host_id: str, data: dict, *, activity_owner: str = "") -> dict:
         """Changing SSH details invalidates prior verification and scan readiness."""
@@ -255,7 +370,7 @@ class Store:
 
     def begin_activity(self, kind: str, label: str, target_keys: list[str],
                        *, total: int = 1) -> dict:
-        """Atomically register a read-only/provisioning operation and locks.
+        """Atomically register a controlled background operation and locks.
 
         A duplicate button click must not start a second remote request. A
         patch worker also holds a separate host lock, so prevent scans and
@@ -264,7 +379,7 @@ class Store:
         """
         if not target_keys or len(set(target_keys)) != len(target_keys):
             raise ValueError("No unique operation targets were provided")
-        if kind not in {"scan", "ssh_test", "enrollment", "ssh_repair", "web_access"}:
+        if kind not in {"scan", "ssh_test", "enrollment", "ssh_repair", "web_access", "compose_verify", "compose_update"}:
             raise ValueError("Unsupported background activity")
         activity_id = new_id()
         with self.connection() as db:
@@ -421,10 +536,13 @@ class Store:
             if result.get("os", {}).get("package_query_ok", True) is False:
                 raise ValueError(f"{host['name']}: package query failed")
             packages = result.get("os", {}).get("packages", [])
+            scan_metadata = result.get("os", {}).get("metadata", "cached")
+            scan_warning = str(result.get("os", {}).get("apt_error") or "")[:380]
             if not packages and mode == 'apply':
                 raise ValueError(f"{host['name']}: no pending OS updates")
             targets.append({"host_id": host_id, "name": host["name"], "scan_id": scan["id"],
                             "packages": packages, "protected": bool(host["protected"]),
+                            "scan_metadata": scan_metadata, "scan_warning": scan_warning,
                             "address": host["address"], "user": host["ssh_user"],
                             "port": host["ssh_port"], "key_path": host["key_path"],
                             "sudo_mode": host["sudo_mode"]})
@@ -455,7 +573,7 @@ class Store:
         return data
 
     def approve_plan(self, plan_id: str, operator: str, ack: bool,
-                     confirmation: str = '') -> dict:
+                     confirmation: str = '', repo_warning_ack: bool = False) -> dict:
         """Record explicit approval of the reviewed, immutable patch plan.
 
         The authenticated, CSRF-protected web submit action is the explicit
@@ -469,9 +587,13 @@ class Store:
             raise ValueError("Plan expired. Scan and review again")
         if any(x["protected"] for x in plan["snapshot"]["targets"]) and not ack:
             raise ValueError("Protected host acknowledgement required")
+        if (plan["snapshot"].get("mode") == "apply" and
+            any(t.get("scan_metadata") == "cached" for t in plan["snapshot"]["targets"]) and
+            not repo_warning_ack):
+            raise ValueError("Acknowledge incomplete APT metadata before patching")
         with self.connection() as db:
-            db.execute("UPDATE plans SET approved_at=?,approved_by=?,protected_ack=? WHERE id=? AND approved_at IS NULL",
-                       (now(), operator, int(ack), plan_id))
+            db.execute("UPDATE plans SET approved_at=?,approved_by=?,protected_ack=?,repo_warning_ack=? WHERE id=? AND approved_at IS NULL",
+                       (now(), operator, int(ack), int(repo_warning_ack), plan_id))
         return self.plan(plan_id)
 
     def create_job(self, plan_id: str, idempotency: str) -> dict:
@@ -530,9 +652,9 @@ class Store:
         """
         with self.connection() as db:
             jobs = db.execute("UPDATE jobs SET acknowledged=1 WHERE acknowledged=0 "
-                              "AND state IN ('failed','interrupted','partially_completed')").rowcount
+                              "AND state IN ('failed','interrupted','partially_completed','completed_with_warnings')").rowcount
             activities = db.execute("UPDATE activities SET acknowledged=1 WHERE acknowledged=0 "
-                                    "AND state IN ('failed','partial','interrupted')").rowcount
+                                    "AND state IN ('failed','partial','interrupted','partially_completed','completed_with_warnings')").rowcount
         return {'job_alerts': jobs, 'activity_alerts': activities}
 
     def clear_patch_history(self) -> dict:
@@ -561,12 +683,123 @@ class Store:
                 db.executemany('DELETE FROM plans WHERE id=?', [(p,) for p in plans])
         return {'deleted': len(ids), 'job_ids': ids}
 
+    def clear_all_history(self) -> dict:
+        """Delete historical operations and web audit rows without changing inventory.
+
+        A single SQLite transaction spans controller and Django audit tables,
+        since both use the same state database. Never erase active work or
+        locks: doing so would orphan executing jobs and remove UI visibility.
+        Login/rate-limit data, accounts, scan findings, approvals not used by
+        jobs, and Compose source verification are not history and are kept.
+        """
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute("SELECT 1 FROM jobs WHERE state IN ('queued','running') LIMIT 1").fetchone():
+                raise ValueError('Cannot clear history while patch jobs are active')
+            if db.execute("SELECT 1 FROM activities WHERE state IN ('queued','running') LIMIT 1").fetchone():
+                raise ValueError('Cannot clear history while background activities are active')
+            if db.execute('SELECT 1 FROM host_locks LIMIT 1').fetchone() or \
+                    db.execute('SELECT 1 FROM activity_targets LIMIT 1').fetchone():
+                raise ValueError('Cannot clear history while server operations are locked')
+            jobs = db.execute('SELECT id,plan_id FROM jobs').fetchall()
+            job_ids = [r['id'] for r in jobs]
+            activity_count = db.execute('SELECT COUNT(*) FROM activities').fetchone()[0]
+            # Records may be present after a failed upgrade or older version;
+            # remove orphaned task events too, but never scan or host findings.
+            db.execute('DELETE FROM events')
+            db.execute('DELETE FROM job_targets')
+            db.execute('DELETE FROM jobs')
+            db.execute('DELETE FROM activity_events')
+            db.execute('DELETE FROM activities')
+            if jobs:
+                db.executemany('DELETE FROM plans WHERE id=?',
+                               [(x,) for x in {r['plan_id'] for r in jobs}])
+            # The Django audit model is stored in this same SQLite database.
+            # A fresh pre-migration install may not have the table yet.
+            audit_count = 0
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='opm_web_auditevent'").fetchone():
+                audit_count = db.execute('DELETE FROM opm_web_auditevent').rowcount
+        return {'deleted': len(job_ids) + activity_count + audit_count,
+                'jobs': len(job_ids), 'activities': activity_count,
+                'audits': audit_count, 'job_ids': job_ids}
+
+    def interrupt_job(self, job_id: str, reason: str,
+                      worker_result: str = '') -> bool:
+        """Atomically reconcile a detached worker that is no longer active.
+
+        An interrupted worker may have changed packages before it stopped.
+        Preserve terminal target outcomes, mark in-progress targets unknown,
+        and distinguish targets that were never started. The job state,
+        targets, recovery events and host locks change in one transaction.
+        Repeated reconciliation must not rewrite already-terminal evidence.
+        """
+        from .validation import sanitize
+        message = sanitize(str(reason), 480)
+        detail = sanitize(str(worker_result), 120) if worker_result else ''
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            changed = db.execute(
+                "UPDATE jobs SET state='interrupted',error=?,"
+                "started=COALESCE(started,?),finished=? "
+                "WHERE id=? AND state IN ('queued','running')",
+                (message, now(), now(), job_id),
+            ).rowcount
+            if not changed:
+                return False
+            targets = db.execute(
+                'SELECT host_id,state FROM job_targets WHERE job_id=?',
+                (job_id,),
+            ).fetchall()
+            for target in targets:
+                state, host_id = target['state'], target['host_id']
+                if state not in ('queued', 'running', 'verifying'):
+                    continue  # Completed/failed/cancelled targets must retain evidence.
+                if state == 'queued':
+                    new_state = 'not_started'
+                    target_message = ('Worker stopped before this target began. '
+                                      'No patch operation was initiated for this target.')
+                else:
+                    stage_row = db.execute(
+                        'SELECT task FROM events WHERE job_id=? AND host_id=? '
+                        'ORDER BY id DESC LIMIT 1',
+                        (job_id, host_id),
+                    ).fetchone()
+                    stage = sanitize(stage_row['task'], 90) if stage_row else 'Unknown stage'
+                    new_state = 'interrupted'
+                    target_message = (f'Last recorded step: {stage}. The worker stopped; '
+                                      'remote package state is unverified. Inspect this host before retrying.')
+                db.execute(
+                    'UPDATE job_targets SET state=?,error=? '
+                    'WHERE job_id=? AND host_id=? AND state=?',
+                    (new_state, target_message, job_id, host_id, state),
+                )
+                db.execute(
+                    'INSERT INTO events(job_id,host_id,timestamp,level,task,message) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (job_id, host_id, now(), 'warning', 'Recovery', target_message),
+                )
+            recovery_message = (message + ('. ' + detail if detail else '') +
+                                '. Remote package state must be checked before manual retry. '
+                                'OPM did not replay the patch.')
+            db.execute(
+                'INSERT INTO events(job_id,host_id,timestamp,level,task,message) '
+                'VALUES(?,?,?,?,?,?)',
+                (job_id, None, now(), 'warning', 'Recovery',
+                 sanitize(recovery_message, 850)),
+            )
+            db.execute('DELETE FROM host_locks WHERE job_id=?', (job_id,))
+        return True
+
     def job_state(self, job_id: str, state: str, error: str = "") -> None:
+        if state == 'interrupted':
+            self.interrupt_job(job_id, error or 'Worker interrupted')
+            return
         with self.connection() as db:
             db.execute("UPDATE jobs SET state=?,error=?,started=COALESCE(started,?),"
-                       "finished=CASE WHEN ? IN ('completed','failed','interrupted','partially_completed','cancelled','simulated') THEN ? ELSE NULL END WHERE id=?",
+                       "finished=CASE WHEN ? IN ('completed','failed','interrupted','partially_completed','completed_with_warnings','cancelled','simulated') THEN ? ELSE NULL END WHERE id=?",
                        (state, error, now(), state, now(), job_id))
-            if state in {"completed", "simulated", "failed", "interrupted", "partially_completed", "cancelled"}:
+            if state in {"completed", "simulated", "failed", "interrupted", "partially_completed", "completed_with_warnings", "cancelled"}:
                 db.execute("DELETE FROM host_locks WHERE job_id=?", (job_id,))
 
     def target_state(self, job_id: str, host_id: str, state: str, error: str = "", reboot: bool | None = None) -> None:

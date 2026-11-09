@@ -59,13 +59,17 @@ def test_account_actions_are_buttons_with_confirm_and_full_width():
     assert "{% url 'create_account' %}" in settings
     assert 'Create New Account' in settings
     assert 'accounts-section-heading' in settings
-    assert 'data-account-disable-toggle' in settings
-    assert 'name="confirm"' in settings and 'pattern="DISABLE"' in settings
+    account_edit = (TEMPLATES/'account_edit.html').read_text()
+    assert 'data-account-disable-toggle' not in settings
+    assert 'Enable account' in account_edit and 'Disable account' in account_edit
+    assert 'Delete account permanently' in account_edit
+    assert 'name="confirm_delete" value="yes" required' in account_edit
+    assert 'name="confirm_username"' not in account_edit
     assert '<details class="disclosure danger-zone"><summary>Disable' not in settings
     assert 'account-permission-note' in settings
     assert '.account-edit-surface, .account-security-surface { width:100%; max-width:none; }' in css
     assert 'account-security-surface' in (TEMPLATES/'change_password.html').read_text()
-    assert 'settings_accounts.js' in settings
+    assert 'settings_accounts.js' not in settings
 
 
 def test_protected_server_checkbox_restored_and_dashboard_has_css_lock():
@@ -74,9 +78,12 @@ def test_protected_server_checkbox_restored_and_dashboard_has_css_lock():
     styles = (ROOT/'src/opm/web/static/web/styles.css').read_text()
     assert '{{ form.protected }}' in enroll
     assert 'Require separate approval before patching this server' in enroll
-    assert 'is-protected' in dashboard
-    assert '.machine-icon.is-protected::before' in styles
-    assert '.machine-icon.is-protected::after' in styles
+    assert "include 'web/partials/server_logo.html' with server=h" in dashboard
+    assert '.server-logo-lock' in styles
+    assert 'right: -2px;' in styles
+    assert 'bottom: -2px;' in styles
+    assert 'background: transparent;' in styles
+    assert 'border: 0;' in styles
 
 
 def test_scan_all_history_names_failed_server_and_sanitized_reason(monkeypatch, repo):

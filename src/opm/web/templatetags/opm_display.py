@@ -1,6 +1,7 @@
 """Presentation-only formatting of controller timestamps and scan ages."""
 from datetime import datetime, timezone
 from django import template
+from opm.compose_inventory import docker_compose_projects
 from django.utils import timezone as dj_timezone
 
 register = template.Library()
@@ -82,3 +83,23 @@ def engine_message(result, engine):
         scope = result.get('scope', 'current SSH user')
         return 'No containers found in checked context(s): ' + str(scope)[:160]
     return name + ' is installed, but OPM cannot access its containers'
+
+
+@register.filter
+def compose_projects(engines):
+    """Docker Compose candidates only; no container execution or file access."""
+    return docker_compose_projects(engines)
+
+
+@register.filter
+def job_state_label(value):
+    """Human-readable patch statuses without exposing internal enum names."""
+    labels = {
+        'not_started': 'Not started',
+        'completed_with_warnings': 'Completed with warnings',
+        'partially_completed': 'Partially completed',
+        'interrupted': 'Interrupted',
+        'simulated': 'Simulated',
+    }
+    name = str(value or '')
+    return labels.get(name, name.replace('_', ' ').capitalize())

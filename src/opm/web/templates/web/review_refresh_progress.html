@@ -1,0 +1,17 @@
+{% extends 'web/base.html' %}
+{% block breadcrumb_parents %}<a href="{% url 'patch_manager' %}">Patch Manager</a> <span class="breadcrumb-separator" aria-hidden="true">/</span> {% endblock %}{% block breadcrumb %}Refresh progress{% endblock %}
+{% block title %}Refreshing selected scans{% endblock %}
+{% block body %}
+<div class="page-intro"><div><p class="eyebrow">PATCH REVIEW</p><h1>Refreshing selected servers</h1>
+<p class="subtle">The scan runs in the background. Your server selection and execution mode are preserved.</p></div></div>
+<section class="surface form-panel patch-review-panel"><div class="surface-heading"><div><h2>Scan progress</h2><p>OPM will open the patch-review screen automatically when all scans finish successfully.</p></div><span class="status {% if waiting %}neutral{% elif activity.state == 'completed' %}ok{% else %}warn{% endif %}">{{ activity.state|title }}</span></div>
+<div class="activity-detail-content"><p>{{ activity.detail }}</p><p class="muted small">{{ activity.completed }} of {{ activity.total }} servers checked</p>
+{% if waiting %}<p class="muted small">Checking scan status automatically. You can also navigate away while OPM continues scanning.</p>
+{% elif ready %}
+<p class="muted small">The selected servers have current scan results. Opening your patch plan for review now. No patch has been started.</p>
+<form id="continue-patch-review" method="post" action="{% url 'review_refresh_finish' %}">{% csrf_token %}<button type="submit" class="btn primary">Continue to patch review</button></form>
+<script>document.getElementById('continue-patch-review').submit();</script>
+{% else %}<div class="warning-banner"><strong>Review needs attention</strong><p>One or more scans did not complete cleanly. No patch job was started. Inspect the failure details in History, then retry only when ready.</p></div>
+<div class="form-actions"><a class="btn ghost" href="{% url 'activity_detail' activity.id %}">Open scan log</a><a class="btn primary" href="{% url 'review_refresh' %}">Retry / continue</a></div>{% endif %}
+</div></section>
+{% endblock %}
